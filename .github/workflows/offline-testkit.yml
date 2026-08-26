@@ -1,0 +1,40 @@
+name: Offline TestKit
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "23 4 * * 1"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: offline-testkit-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: gradle
+      - uses: gradle/actions/wrapper-validation@v4
+      - name: Verify wrapper JAR checksum
+        run: ./scripts/verify-gradle-wrapper.sh
+      - name: Prepare checksum-pinned matrix online
+        run: ./gradlew --no-daemon prepareOfflineTestKitEnvironment
+      - name: Build and verify Offline TestKit locally
+        run: |
+          ./gradlew --offline --no-daemon --rerun-tasks packageOfflineHardeningTestKit verifyOfflineHardeningTestKit
+          cp build/distributions/hardening-gradle-plugin-1.2.0-offline-testkit.zip "$RUNNER_TEMP/offline-testkit-first.zip"
+      - name: Rebuild and compare Offline TestKit locally
+        run: |
+          ./gradlew --offline --no-daemon --rerun-tasks packageOfflineHardeningTestKit verifyOfflineHardeningTestKit
+          cmp --silent "$RUNNER_TEMP/offline-testkit-first.zip" build/distributions/hardening-gradle-plugin-1.2.0-offline-testkit.zip

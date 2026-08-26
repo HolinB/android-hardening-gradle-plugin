@@ -1,0 +1,20 @@
+#!/bin/sh
+set -eu
+
+launcher_root=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+java_version=$(java -version 2>&1 | sed -n 's/.*version "\([^"]*\)".*/\1/p' | head -n 1)
+case "$java_version" in
+    1.*) java_major=${java_version#1.}; java_major=${java_major%%.*} ;;
+    *) java_major=${java_version%%.*} ;;
+esac
+case "$java_major" in
+    ''|*[!0-9]*)
+        echo "hardeningw: JDK 17 or newer is required" >&2
+        exit 2
+        ;;
+esac
+if [ "$java_major" -lt 17 ]; then
+    echo "hardeningw: JDK 17 or newer is required" >&2
+    exit 2
+fi
+exec java -Dhardening.launcher.source="$launcher_root" "$launcher_root/bootstrap/HardeningLauncher.java" "$@"
