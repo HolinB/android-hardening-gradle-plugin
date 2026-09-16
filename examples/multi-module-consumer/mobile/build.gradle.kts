@@ -82,6 +82,11 @@ androidHardening {
     ownership {
         module(":mobile") {
             sourceSets.addAll("main", "demo")
+            images {
+                formats(PNG, WEBP)
+                include("src/main/res/drawable/**/*.png")
+                exclude("src/main/res/drawable/**/*.9.png")
+            }
             webp {
                 include("src/demoResources/res/drawable/**/*.webp")
                 exclude("src/demoResources/res/drawable/no_rewrite/**/*.webp")
@@ -107,6 +112,11 @@ androidHardening {
 
     reproducibility {
         fixedSeed.set(providers.gradleProperty("androidHardeningFixedSeed"))
+    }
+
+    bundle {
+        dependencyMetadata.set(OMIT)
+        structuralMetadataEntryCount.set(16)
     }
 
     signing {

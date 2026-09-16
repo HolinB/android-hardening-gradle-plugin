@@ -39,6 +39,8 @@ class BundleZipRewriter {
         output: Path,
         contentSaltSha256: String,
         replacements: Collection<BundleEntryReplacement> = emptyList(),
+        removals: Set<String> = emptySet(),
+        additions: Collection<BundleEntryAddition> = emptyList(),
     ): BundleRewriteResult {
         require(Files.isRegularFile(input)) { "ordinary AAB input is missing" }
         requireSha256(contentSaltSha256, "contentSaltSha256")
@@ -51,6 +53,27 @@ class BundleZipRewriter {
         val manifestEntries = mutableListOf<BundleRewriteEntry>()
         val replacementsByOldPath = replacements.associateBy(BundleEntryReplacement::oldPath)
         require(replacementsByOldPath.size == replacements.size) { "bundle replacements contain duplicate source paths" }
+        require(removals.all { it == DEPENDENCY_METADATA_PATH }) {
+            "bundle removals may only target dependencies.pb"
+        }
+        removals.forEach { requireSafeUniqueEntryNames(listOf(it)) }
+        require(replacementsByOldPath.keys.intersect(removals).isEmpty()) {
+            "bundle entries cannot be both replaced and removed"
+        }
+        val additionsByPath = additions.associateBy(BundleEntryAddition::path)
+        require(additionsByPath.size == additions.size) { "bundle additions contain duplicate paths" }
+        additions.forEach { addition ->
+            requireSafeUniqueEntryNames(listOf(addition.path))
+            require(addition.path.startsWith(BundleStructuralMetadata.STRUCTURE_PREFIX)) {
+                "bundle additions must use the hardening structure metadata prefix"
+            }
+            require(addition.bytes.size == STRUCTURE_ENTRY_BYTES) {
+                "hardening structure metadata entries must be exactly $STRUCTURE_ENTRY_BYTES bytes"
+            }
+            require(!isPreviousSignature(addition.path) && !addition.path.startsWith("META-INF/", true)) {
+                "bundle additions cannot target META-INF"
+            }
+        }
         replacements.forEach { replacement ->
             requireSafeUniqueEntryNames(listOf(replacement.oldPath))
             requireSafeUniqueEntryNames(listOf(replacement.newPath))
@@ -72,12 +95,13 @@ class BundleZipRewriter {
                 requireSafeUniqueEntryNames(entries.map(ZipEntry::getName))
                 val inputNames = entries.map(ZipEntry::getName).toSet()
                 require(replacementsByOldPath.keys.all(inputNames::contains)) { "bundle replacement source entry is missing" }
+                require(removals.all(inputNames::contains)) { "bundle removal source entry is missing" }
                 val finalNames = entries.mapNotNull { entry ->
                     when {
-                        isPreviousSignature(entry.name) || isDetachedMetadata(entry.name) -> null
+                        isPreviousSignature(entry.name) || isDetachedMetadata(entry.name) || entry.name in removals -> null
                         else -> replacementsByOldPath[entry.name]?.newPath ?: entry.name
                     }
-                }
+                } + additionsByPath.keys
                 requireSafeUniqueEntryNames(finalNames)
                 val orderedEntries = entries.sortedBy { entry ->
                     replacementsByOldPath[entry.name]?.newPath ?: entry.name
@@ -86,7 +110,7 @@ class BundleZipRewriter {
                     orderedEntries.forEach { entry ->
                         if (isPreviousSignature(entry.name)) return@forEach
                         val digest = archive.entrySha256(entry)
-                        if (isDetachedMetadata(entry.name)) {
+                        if (isDetachedMetadata(entry.name) || entry.name in removals) {
                             manifestEntries += BundleRewriteEntry.removed(entry.name, digest)
                             return@forEach
                         }
@@ -141,6 +165,17 @@ class BundleZipRewriter {
                                 )
                             }
                         }
+                    }
+                    additions.sortedBy(BundleEntryAddition::path).forEach { addition ->
+                        val addedEntry = ZipEntry(addition.path).apply {
+                            time = DETERMINISTIC_ZIP_TIMESTAMP_MILLIS
+                            comment = null
+                            extra = null
+                        }
+                        rewritten.putNextEntry(addedEntry)
+                        rewritten.write(addition.bytes)
+                        rewritten.closeEntry()
+                        manifestEntries += BundleRewriteEntry.added(addition.path, Sha256.hex(addition.bytes))
                     }
                 }
             }
@@ -206,6 +241,9 @@ class BundleZipRewriter {
             "BUNDLE-METADATA/com.holin.android.hardening/"
         private const val EMBEDDED_R8_MAPPING_PATH =
             "BUNDLE-METADATA/com.android.tools.build.obfuscation/proguard.map"
+        internal const val DEPENDENCY_METADATA_PATH =
+            "BUNDLE-METADATA/com.android.tools.build.libraries/dependencies.pb"
+        private const val STRUCTURE_ENTRY_BYTES = 32
         private val SIGNATURE_SUFFIXES = listOf(".SF", ".RSA", ".DSA", ".EC")
         private val SHA_256 = Regex("[0-9a-f]{64}")
         private val WINDOWS_ABSOLUTE = Regex("^[A-Za-z]:/")

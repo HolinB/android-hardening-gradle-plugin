@@ -121,12 +121,13 @@ object PortableStateMigrationDescriptorCodec {
             state.fromContentDomain in setOf(
                 CanonicalContentDomain.LEGACY_V1.id,
                 CanonicalContentDomain.HOLIN_1_2.id,
+                CanonicalContentDomain.HOLIN_1_3.id,
             ),
         ) {
             "portable migration fromContentDomain must identify a supported content domain"
         }
-        require(state.toContentDomain == CanonicalContentDomain.HOLIN_1_2.id) {
-            "portable migration toContentDomain must identify the 1.2.0 domain"
+        require(state.toContentDomain == CanonicalContentDomain.HOLIN_1_3.id) {
+            "portable migration toContentDomain must identify the 1.3.0 domain"
         }
         require(state.generation > 0) { "portable migration generation must be positive" }
         require(runCatching { UUID.fromString(state.lineageId) }.getOrNull()?.toString() == state.lineageId) {

@@ -3,6 +3,8 @@ package com.holin.android.hardening.artifact
 import com.holin.android.hardening.resources.ImageIneligibilityReason
 import com.holin.android.hardening.resources.ImageTransformStatus
 import com.holin.android.hardening.resources.ResourceType
+import com.holin.android.hardening.ImageFormat
+import com.holin.android.hardening.DependencyMetadataMode
 import com.holin.android.hardening.state.StrictJson
 import groovy.json.JsonSlurper
 
@@ -17,9 +19,10 @@ data class HardenedBundlePlanReport(
     val resources: PlannedResourceSummary,
     val fixedSeedProvided: Boolean = false,
     val fixedSeedHash: String? = null,
+    val bundle: PlannedBundleMetadataSummary = PlannedBundleMetadataSummary(),
 ) {
     init {
-        require(schemaVersion == 1) { "unsupported bundle hardening plan schema $schemaVersion" }
+        require(schemaVersion in 1..2) { "unsupported bundle hardening plan schema $schemaVersion" }
         requireSha256(sourceAabSha256, "sourceAabSha256")
         requireSha256(contentSaltSha256, "contentSaltSha256")
         require(namespace.isNotBlank()) { "namespace must not be blank" }
@@ -29,6 +32,37 @@ data class HardenedBundlePlanReport(
             "fixed seed hash must be present exactly when fixedSeedProvided is true"
         }
         fixedSeedHash?.let { hash -> requireSha256(hash, "fixedSeedHash") }
+    }
+}
+
+enum class DependencyMetadataStatus {
+    PRESERVED,
+    REMOVED,
+    ALREADY_ABSENT,
+}
+
+data class PlannedBundleMetadataSummary(
+    val dependencyMetadataMode: DependencyMetadataMode = DependencyMetadataMode.PRESERVE,
+    val dependencyMetadataStatus: DependencyMetadataStatus = DependencyMetadataStatus.ALREADY_ABSENT,
+    val dependencyMetadataSha256: String? = null,
+    val structuralMetadataEntryCount: Int = 0,
+    val structuralMetadataPaths: List<String> = emptyList(),
+) {
+    init {
+        dependencyMetadataSha256?.let { requireSha256(it, "dependency metadata hash") }
+        require(structuralMetadataEntryCount in 0..64) {
+            "structural metadata entry count must be in 0..64"
+        }
+        require(structuralMetadataPaths.size == structuralMetadataEntryCount) {
+            "structural metadata path accounting is inconsistent"
+        }
+        BundleZipRewriter.requireSafeUniqueEntryNames(structuralMetadataPaths)
+        require(structuralMetadataPaths.all { it.startsWith(BundleStructuralMetadata.STRUCTURE_PREFIX) }) {
+            "structural metadata paths must use the hardening prefix"
+        }
+        require(dependencyMetadataStatus != DependencyMetadataStatus.REMOVED ||
+            dependencyMetadataMode == DependencyMetadataMode.OMIT
+        ) { "removed dependency metadata requires OMIT mode" }
     }
 }
 
@@ -233,6 +267,9 @@ data class PlannedResourceSummary(
     val diversifiedProtoXmlCount: Int,
     val renames: List<PlannedResourceRename>,
     val images: List<PlannedImageEntry>,
+    val transformedJpegCount: Int = 0,
+    val corpusImageCount: Int = 0,
+    val imageFormatCoverage: List<PlannedImageFormatCoverage> = emptyList(),
 ) {
     init {
         require(inventoryVariantCount > 0) { "owned resource inventory must not be empty" }
@@ -287,7 +324,7 @@ data class PlannedResourceSummary(
         }) {
             "transformed WebP accounting is inconsistent"
         }
-        require(transformedPngCount + transformedWebpCount == transformedImageCount) {
+        require(transformedPngCount + transformedWebpCount + transformedJpegCount == transformedImageCount) {
             "transformed image format accounting is inconsistent"
         }
         require(diversifiedProtoXmlCount >= 0 && diversifiedProtoXmlCount <= renamedFileCount) {
@@ -295,6 +332,35 @@ data class PlannedResourceSummary(
         }
         require(renames.map { it.resourceId }.distinct().size == renames.size) { "duplicate resource rename ID" }
         require(images.map(PlannedImageEntry::oldPath).distinct().size == images.size) { "duplicate image report path" }
+        require(corpusImageCount >= 0) { "corpus image count must not be negative" }
+        if (corpusImageCount > 0) {
+            require(images.filter { it.status == ImageTransformStatus.TRANSFORMED }.all {
+                requireNotNull(it.nearestCorpusPHashDistance) >= minimumImagePHashDistance
+            }) { "a transformed image conflicts with the ordinary image corpus" }
+        }
+        require(imageFormatCoverage.map(PlannedImageFormatCoverage::format).distinct().size == imageFormatCoverage.size) {
+            "duplicate image format coverage"
+        }
+    }
+}
+
+data class PlannedImageFormatCoverage(
+    val format: ImageFormat,
+    val eligibleCount: Int,
+    val transformedCount: Int,
+    val eligibleBytes: Long,
+    val transformedBytes: Long,
+) {
+    val countCoverage: Double = coverage(transformedCount, eligibleCount)
+    val byteCoverage: Double = if (eligibleBytes == 0L) 1.0 else transformedBytes.toDouble() / eligibleBytes
+
+    init {
+        require(eligibleCount >= 0 && transformedCount in 0..eligibleCount) {
+            "image format count accounting is inconsistent"
+        }
+        require(eligibleBytes >= 0 && transformedBytes in 0..eligibleBytes) {
+            "image format byte accounting is inconsistent"
+        }
     }
 }
 
@@ -323,6 +389,12 @@ data class PlannedImageEntry(
     val alphaPreserved: Boolean?,
     val ssim: Double?,
     val pHashDistance: Int?,
+    val originalWidth: Int? = null,
+    val originalHeight: Int? = null,
+    val dimensionChanged: Boolean = false,
+    val resizeFallback: Boolean = false,
+    val resizeFallbackReason: String? = null,
+    val nearestCorpusPHashDistance: Int? = null,
 ) {
     init {
         BundleZipRewriter.requireSafeUniqueEntryNames(listOf(oldPath) + listOfNotNull(newPath))
@@ -336,15 +408,36 @@ data class PlannedImageEntry(
                 requireSha256(requireNotNull(transformedSha256), "image transformed hash")
                 require(width != null && width > 0 && height != null && height > 0) { "transformed image dimensions are invalid" }
                 require(alphaPreserved == true) { "transformed image alpha must be preserved" }
-                require(ssim != null && ssim.isFinite() && ssim in -1.0..1.0) { "transformed image SSIM is invalid" }
-                require(pHashDistance != null && pHashDistance in 0..64) { "transformed image pHash distance is invalid" }
+                require(!dimensionChanged || (originalWidth != null && originalHeight != null)) {
+                    "dimension-changed image must report original dimensions"
+                }
+                if (!dimensionChanged) {
+                    require(ssim != null && ssim.isFinite() && ssim in -1.0..1.0) { "transformed image SSIM is invalid" }
+                    require(pHashDistance != null && pHashDistance in 0..64) { "transformed image pHash distance is invalid" }
+                } else {
+                    require(originalWidth != width || originalHeight != height) {
+                        "dimension-changed image must have different dimensions"
+                    }
+                }
+                require(nearestCorpusPHashDistance == null || nearestCorpusPHashDistance in 0..64) {
+                    "transformed image corpus pHash distance is invalid"
+                }
+                require(resizeFallbackReason == null || resizeFallback) {
+                    "resize fallback reason requires resizeFallback"
+                }
             }
             ImageTransformStatus.INELIGIBLE,
             ImageTransformStatus.EXCLUDED,
             -> require(
                 transformedSha256 == null && width == null && height == null && alphaPreserved == null &&
-                    ssim == null && pHashDistance == null,
+                    ssim == null && pHashDistance == null && originalWidth == null && originalHeight == null &&
+                    !dimensionChanged,
             ) { "non-transformed image must not claim output metrics" }
+            .also {
+                require(nearestCorpusPHashDistance == null || nearestCorpusPHashDistance in 0..64) {
+                    "image corpus pHash distance is invalid"
+                }
+            }
         }
     }
 }
@@ -366,16 +459,21 @@ object HardenedBundlePlanReportCodec {
         append("],\"dex\":")
         appendDex(report.dex)
         append(",\"resources\":")
-        appendResources(report.resources)
+        appendResources(report.resources, report.schemaVersion)
+        if (report.schemaVersion >= 2) {
+            append(",\"bundle\":")
+            appendBundle(report.bundle)
+        }
         append("}\n")
     }
 
     fun decode(json: String): HardenedBundlePlanReport {
         StrictJson.validateDocument(json)
         val root = JsonSlurper().parseText(json).planMap("report")
-        root.exactKeys(REPORT_KEYS, "report")
+        val schemaVersion = root.planInt("schemaVersion")
+        root.exactKeys(REPORT_KEYS, if (schemaVersion == 1) setOf("bundle") else emptySet(), "report")
         return HardenedBundlePlanReport(
-            root.planInt("schemaVersion"),
+            schemaVersion,
             root.planString("sourceAabSha256"),
             root.planString("contentSaltSha256"),
             root.planString("namespace"),
@@ -384,10 +482,24 @@ object HardenedBundlePlanReportCodec {
                 it as? String ?: invalidPlan("ownedModules values must be strings")
             },
             decodeDex(root["dex"]),
-            decodeResources(root["resources"]),
+            decodeResources(root["resources"], schemaVersion),
             root.planBoolean("fixedSeedProvided"),
             root.planNullableString("fixedSeedHash"),
+            root["bundle"]?.let(::decodeBundle) ?: PlannedBundleMetadataSummary(),
         )
+    }
+
+    private fun StringBuilder.appendBundle(bundle: PlannedBundleMetadataSummary) {
+        append("{\"dependencyMetadataMode\":").append(json(bundle.dependencyMetadataMode.name))
+        append(",\"dependencyMetadataStatus\":").append(json(bundle.dependencyMetadataStatus.name))
+        append(",\"dependencyMetadataSha256\":").append(jsonNullable(bundle.dependencyMetadataSha256))
+        append(",\"structuralMetadataEntryCount\":").append(bundle.structuralMetadataEntryCount)
+        append(",\"structuralMetadataPaths\":[")
+        bundle.structuralMetadataPaths.sorted().forEachIndexed { index, path ->
+            if (index > 0) append(',')
+            append(json(path))
+        }
+        append("]}")
     }
 
     private fun StringBuilder.appendDex(dex: PlannedDexSummary) {
@@ -455,7 +567,7 @@ object HardenedBundlePlanReportCodec {
         append("]}")
     }
 
-    private fun StringBuilder.appendResources(resources: PlannedResourceSummary) {
+    private fun StringBuilder.appendResources(resources: PlannedResourceSummary, schemaVersion: Int) {
         append("{\"inventoryVariantCount\":").append(resources.inventoryVariantCount)
         append(",\"renamedResourceCount\":").append(resources.renamedResourceCount)
         append(",\"renamedFileCount\":").append(resources.renamedFileCount)
@@ -472,7 +584,23 @@ object HardenedBundlePlanReportCodec {
         append(",\"imageByteCoverage\":").append(resources.imageByteCoverage)
         append(",\"transformedPngCount\":").append(resources.transformedPngCount)
         append(",\"transformedWebpCount\":").append(resources.transformedWebpCount)
+        append(",\"transformedJpegCount\":").append(resources.transformedJpegCount)
         append(",\"diversifiedProtoXmlCount\":").append(resources.diversifiedProtoXmlCount)
+        if (schemaVersion >= 2) {
+            append(",\"corpusImageCount\":").append(resources.corpusImageCount)
+            append(",\"imageFormatCoverage\":[")
+            resources.imageFormatCoverage.sortedBy { it.format.name }.forEachIndexed { index, coverage ->
+                if (index > 0) append(',')
+                append("{\"format\":").append(json(coverage.format.name))
+                append(",\"eligibleCount\":").append(coverage.eligibleCount)
+                append(",\"transformedCount\":").append(coverage.transformedCount)
+                append(",\"countCoverage\":").append(coverage.countCoverage)
+                append(",\"eligibleBytes\":").append(coverage.eligibleBytes)
+                append(",\"transformedBytes\":").append(coverage.transformedBytes)
+                append(",\"byteCoverage\":").append(coverage.byteCoverage).append('}')
+            }
+            append(']')
+        }
         append(",\"renames\":[")
         resources.renames.forEachIndexed { index, rename ->
             if (index > 0) append(',')
@@ -495,7 +623,16 @@ object HardenedBundlePlanReportCodec {
             append(",\"height\":").append(image.height ?: "null")
             append(",\"alphaPreserved\":").append(image.alphaPreserved ?: "null")
             append(",\"ssim\":").append(image.ssim ?: "null")
-            append(",\"pHashDistance\":").append(image.pHashDistance ?: "null").append('}')
+            append(",\"pHashDistance\":").append(image.pHashDistance ?: "null")
+            append(",\"originalWidth\":").append(image.originalWidth ?: "null")
+            append(",\"originalHeight\":").append(image.originalHeight ?: "null")
+            append(",\"dimensionChanged\":").append(image.dimensionChanged)
+            append(",\"resizeFallback\":").append(image.resizeFallback)
+            append(",\"resizeFallbackReason\":").append(jsonNullable(image.resizeFallbackReason))
+            if (schemaVersion >= 2) {
+                append(",\"nearestCorpusPHashDistance\":").append(image.nearestCorpusPHashDistance ?: "null")
+            }
+            append('}')
         }
         append("]}")
     }
@@ -610,30 +747,56 @@ object HardenedBundlePlanReportCodec {
         )
     }
 
-    private fun decodeResources(raw: Any?): PlannedResourceSummary {
+    private fun decodeResources(raw: Any?, schemaVersion: Int): PlannedResourceSummary {
         val value = raw.planMap("resources")
-        value.exactKeys(RESOURCE_KEYS, "resources")
+        val optional = if (schemaVersion == 1) {
+            setOf("transformedJpegCount", "corpusImageCount", "imageFormatCoverage")
+        } else {
+            emptySet()
+        }
+        value.exactKeys(RESOURCE_KEYS, optional, "resources")
         return PlannedResourceSummary(
-            inventoryVariantCount = value.planInt("inventoryVariantCount"),
-            renamedResourceCount = value.planInt("renamedResourceCount"),
-            renamedFileCount = value.planInt("renamedFileCount"),
-            resourcesPbInputSha256 = value.planString("resourcesPbInputSha256"),
-            resourcesPbOutputSha256 = value.planString("resourcesPbOutputSha256"),
-            minimumImageCoverage = value.planDouble("minimumImageCoverage"),
-            minimumImageSsim = value.planDouble("minimumImageSsim"),
-            minimumImagePHashDistance = value.planInt("minimumImagePHashDistance"),
-            eligibleImageCount = value.planInt("eligibleImageCount"),
-            transformedImageCount = value.planInt("transformedImageCount"),
-            imageCoverage = value.planDouble("imageCoverage"),
-            eligibleImageBytes = value.planLong("eligibleImageBytes"),
-            transformedImageBytes = value.planLong("transformedImageBytes"),
-            imageByteCoverage = value.planDouble("imageByteCoverage"),
-            transformedPngCount = value.planInt("transformedPngCount"),
-            transformedWebpCount = value.planInt("transformedWebpCount"),
-            diversifiedProtoXmlCount = value.planInt("diversifiedProtoXmlCount"),
-            renames = value.planList("renames").mapIndexed { index, item -> decodeRename(item, index) },
-            images = value.planList("images").mapIndexed { index, item -> decodeImage(item, index) },
+            value.planInt("inventoryVariantCount"),
+            value.planInt("renamedResourceCount"),
+            value.planInt("renamedFileCount"),
+            value.planString("resourcesPbInputSha256"),
+            value.planString("resourcesPbOutputSha256"),
+            value.planDouble("minimumImageCoverage"),
+            value.planDouble("minimumImageSsim"),
+            value.planInt("minimumImagePHashDistance"),
+            value.planInt("eligibleImageCount"),
+            value.planInt("transformedImageCount"),
+            value.planDouble("imageCoverage"),
+            value.planLong("eligibleImageBytes"),
+            value.planLong("transformedImageBytes"),
+            value.planDouble("imageByteCoverage"),
+            value.planInt("transformedPngCount"),
+            value.planInt("transformedWebpCount"),
+            value.planInt("diversifiedProtoXmlCount"),
+            value.planList("renames").mapIndexed { index, item -> decodeRename(item, index) },
+            value.planList("images").mapIndexed { index, item -> decodeImage(item, index, schemaVersion) },
+            value.planIntOrDefault("transformedJpegCount", 0),
+            value.planIntOrDefault("corpusImageCount", 0),
+            value.planListOrEmpty("imageFormatCoverage").mapIndexed { index, item ->
+                decodeFormatCoverage(item, index)
+            },
         )
+    }
+
+    private fun decodeFormatCoverage(raw: Any?, index: Int): PlannedImageFormatCoverage {
+        val label = "resources.imageFormatCoverage[$index]"
+        val value = raw.planMap(label)
+        value.exactKeys(FORMAT_COVERAGE_KEYS, label)
+        val result = PlannedImageFormatCoverage(
+            enumValueOf(value.planString("format")),
+            value.planInt("eligibleCount"),
+            value.planInt("transformedCount"),
+            value.planLong("eligibleBytes"),
+            value.planLong("transformedBytes"),
+        )
+        requireMetric(result.countCoverage, value.planDouble("countCoverage"), "$label.countCoverage")
+        requireMetric(result.byteCoverage, value.planDouble("byteCoverage"), "$label.byteCoverage")
+        return result
     }
 
     private fun decodeRename(raw: Any?, index: Int): PlannedResourceRename {
@@ -648,21 +811,52 @@ object HardenedBundlePlanReportCodec {
         )
     }
 
-    private fun decodeImage(raw: Any?, index: Int): PlannedImageEntry {
+    private fun decodeImage(raw: Any?, index: Int, schemaVersion: Int): PlannedImageEntry {
         val value = raw.planMap("resources.images[$index]")
-        value.exactKeys(IMAGE_KEYS, "resources.images[$index]")
+        value.exactKeys(
+            IMAGE_KEYS,
+            if (schemaVersion == 1) {
+                setOf(
+                    "originalWidth", "originalHeight", "dimensionChanged", "resizeFallback",
+                    "resizeFallbackReason", "nearestCorpusPHashDistance",
+                )
+            } else {
+                emptySet()
+            },
+            "resources.images[$index]",
+        )
         return PlannedImageEntry(
-            oldPath = value.planString("oldPath"),
-            newPath = value.planNullableString("newPath"),
-            status = enumValueOf(value.planString("status")),
-            reason = enumValueOf(value.planString("reason")),
-            originalSha256 = value.planString("originalSha256"),
-            transformedSha256 = value.planNullableString("transformedSha256"),
-            width = value.planNullableInt("width"),
-            height = value.planNullableInt("height"),
-            alphaPreserved = value.planNullableBoolean("alphaPreserved"),
-            ssim = value.planNullableDouble("ssim"),
-            pHashDistance = value.planNullableInt("pHashDistance"),
+            value.planString("oldPath"),
+            value.planNullableString("newPath"),
+            enumValueOf(value.planString("status")),
+            enumValueOf(value.planString("reason")),
+            value.planString("originalSha256"),
+            value.planNullableString("transformedSha256"),
+            value.planNullableInt("width"),
+            value.planNullableInt("height"),
+            value.planNullableBoolean("alphaPreserved"),
+            value.planNullableDouble("ssim"),
+            value.planNullableInt("pHashDistance"),
+            value.planNullableInt("originalWidth"),
+            value.planNullableInt("originalHeight"),
+            value.planBooleanOrDefault("dimensionChanged", false),
+            value.planBooleanOrDefault("resizeFallback", false),
+            value.planNullableString("resizeFallbackReason"),
+            value.planNullableInt("nearestCorpusPHashDistance"),
+        )
+    }
+
+    private fun decodeBundle(raw: Any?): PlannedBundleMetadataSummary {
+        val value = raw.planMap("bundle")
+        value.exactKeys(BUNDLE_KEYS, "bundle")
+        return PlannedBundleMetadataSummary(
+            enumValueOf(value.planString("dependencyMetadataMode")),
+            enumValueOf(value.planString("dependencyMetadataStatus")),
+            value.planNullableString("dependencyMetadataSha256"),
+            value.planInt("structuralMetadataEntryCount"),
+            value.planList("structuralMetadataPaths").mapIndexed { index, item ->
+                item as? String ?: invalidPlan("bundle.structuralMetadataPaths[$index] must be a string")
+            },
         )
     }
 
@@ -687,7 +881,7 @@ object HardenedBundlePlanReportCodec {
 
     private val REPORT_KEYS = setOf(
         "schemaVersion", "sourceAabSha256", "contentSaltSha256", "fixedSeedProvided", "fixedSeedHash",
-        "namespace", "generation", "ownedModules", "dex", "resources",
+        "namespace", "generation", "ownedModules", "dex", "resources", "bundle",
     )
     private val DEX_KEYS = setOf(
         "discoveredOwnedDescriptorCount", "boundaryAcceptedDescriptorCount", "boundaryFilteredDescriptorCount",
@@ -710,13 +904,25 @@ object HardenedBundlePlanReportCodec {
         "resourcesPbOutputSha256", "minimumImageCoverage", "minimumImageSsim", "minimumImagePHashDistance",
         "eligibleImageCount", "transformedImageCount", "imageCoverage", "eligibleImageBytes",
         "transformedImageBytes", "imageByteCoverage", "transformedPngCount", "transformedWebpCount",
+        "transformedJpegCount",
+        "corpusImageCount", "imageFormatCoverage",
         "diversifiedProtoXmlCount",
         "renames", "images",
     )
     private val RENAME_KEYS = setOf("resourceId", "type", "oldName", "newName", "renamedFileCount")
     private val IMAGE_KEYS = setOf(
         "oldPath", "newPath", "status", "reason", "originalSha256", "transformedSha256", "width", "height",
-        "alphaPreserved", "ssim", "pHashDistance",
+        "alphaPreserved", "ssim", "pHashDistance", "originalWidth", "originalHeight", "dimensionChanged",
+        "resizeFallback", "resizeFallbackReason",
+        "nearestCorpusPHashDistance",
+    )
+    private val BUNDLE_KEYS = setOf(
+        "dependencyMetadataMode", "dependencyMetadataStatus", "dependencyMetadataSha256",
+        "structuralMetadataEntryCount", "structuralMetadataPaths",
+    )
+    private val FORMAT_COVERAGE_KEYS = setOf(
+        "format", "eligibleCount", "transformedCount", "countCoverage", "eligibleBytes", "transformedBytes",
+        "byteCoverage",
     )
 }
 
@@ -739,7 +945,15 @@ private fun Any?.planMap(label: String): Map<*, *> =
     this as? Map<*, *> ?: invalidPlan("$label must be an object")
 
 private fun Map<*, *>.exactKeys(expected: Set<String>, label: String) {
-    require(keys == expected) { "$label keys must be exactly $expected" }
+    exactKeys(expected, emptySet(), label)
+}
+
+private fun Map<*, *>.exactKeys(expected: Set<String>, optionalMissing: Set<String>, label: String) {
+    require(optionalMissing.all { it in expected }) { "$label has invalid optional keys" }
+    val actual = keys.map { it as? String ?: invalidPlan("$label keys must be strings") }.toSet()
+    require(actual.all { it in expected } && (expected - actual).all { it in optionalMissing }) {
+        "$label keys must be exactly $expected or omit only $optionalMissing"
+    }
 }
 
 private fun Map<*, *>.planString(key: String): String =
@@ -773,6 +987,12 @@ private fun Map<*, *>.planDouble(key: String): Double {
 private fun Map<*, *>.planBoolean(key: String): Boolean =
     this[key] as? Boolean ?: invalidPlan("$key must be a boolean")
 
+private fun Map<*, *>.planBooleanOrDefault(key: String, default: Boolean): Boolean =
+    if (containsKey(key)) planBoolean(key) else default
+
+private fun Map<*, *>.planIntOrDefault(key: String, default: Int): Int =
+    if (containsKey(key)) planInt(key) else default
+
 private fun Map<*, *>.planNullableDouble(key: String): Double? = when (val value = this[key]) {
     null -> null
     is Number -> value.toDouble().also { require(it.isFinite()) { "$key must be finite" } }
@@ -792,6 +1012,9 @@ private fun Map<*, *>.planNullableBoolean(key: String): Boolean? = when (val val
 
 private fun Map<*, *>.planList(key: String): List<*> =
     this[key] as? List<*> ?: invalidPlan("$key must be an array")
+
+private fun Map<*, *>.planListOrEmpty(key: String): List<*> =
+    if (containsKey(key)) planList(key) else emptyList<Any?>()
 
 private fun invalidPlan(message: String): Nothing = throw IllegalArgumentException(message)
 

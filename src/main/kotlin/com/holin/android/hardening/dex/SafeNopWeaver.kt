@@ -442,7 +442,7 @@ internal class SafeNopWeaver {
         const val MAX_PAYLOAD_REPAIR_INSTRUCTIONS = 8
         const val MAX_MARKER_SLOT_SEARCH_STATES = 250_000
         const val MIN_MARKER_PAYLOAD_INSTRUCTIONS = 8
-        val DOMAIN = "com.holin.android.hardening/1.2.0/safe-nop-weave/v1\u0000".toByteArray(StandardCharsets.UTF_8)
+        val DOMAIN = "com.holin.android.hardening/1.3.0/safe-nop-weave/v1\u0000".toByteArray(StandardCharsets.UTF_8)
         val MOVE_RESULT_OPCODES = setOf(
             Opcode.MOVE_RESULT,
             Opcode.MOVE_RESULT_WIDE,

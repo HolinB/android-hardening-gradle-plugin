@@ -1,5 +1,8 @@
 package com.holin.android.hardening.resources
 
+import com.holin.android.hardening.ImageFormat
+import java.nio.file.Path
+
 enum class ResourceType(val directoryName: String) {
     LAYOUT("layout"),
     DRAWABLE("drawable"),
@@ -31,6 +34,9 @@ data class ResourceInventoryEntry(
     val notificationIcon: Boolean = false,
     val animation: Boolean = false,
     val webpDiversificationEnabled: Boolean = false,
+    val imageFormat: ImageFormat? = null,
+    val sourcePath: Path? = null,
+    val imageDiversificationEnabled: Boolean = false,
 )
 
 data class ResourceKey(

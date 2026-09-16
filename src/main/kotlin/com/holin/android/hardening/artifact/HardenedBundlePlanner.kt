@@ -3,6 +3,8 @@ package com.holin.android.hardening.artifact
 import com.android.tools.smali.dexlib2.dexbacked.DexBackedDexFile
 import com.holin.android.hardening.HardeningOwnership
 import com.holin.android.hardening.HardcodedReferenceKind
+import com.holin.android.hardening.DependencyMetadataMode
+import com.holin.android.hardening.ImageFormat
 import com.holin.android.hardening.audit.HardeningSourceAudit
 import com.holin.android.hardening.audit.HardeningSourceAuditScanner
 import com.holin.android.hardening.dex.DexTransformRequest
@@ -15,10 +17,13 @@ import com.holin.android.hardening.naming.PseudowordRegistry
 import com.holin.android.hardening.naming.RegistrySnapshot
 import com.holin.android.hardening.resources.ImageTransformStatus
 import com.holin.android.hardening.resources.ImageIneligibilityReason
+import com.holin.android.hardening.resources.OrdinaryImageCorpus
 import com.holin.android.hardening.resources.OwnedResourceInventoryBuilder
 import com.holin.android.hardening.resources.PngDiversifier
 import com.holin.android.hardening.resources.ProtoResourceDiversifier
 import com.holin.android.hardening.resources.ResourcePseudowordAllocator
+import com.holin.android.hardening.resources.ResourceInventoryEntry
+import com.holin.android.hardening.resources.ResourceOrigin
 import com.holin.android.hardening.resources.ResourceTableTransformer
 import com.holin.android.hardening.resources.ResourceType
 import com.holin.android.hardening.resources.SfntFontDiversifier
@@ -55,6 +60,8 @@ data class HardenedBundlePlanRequest(
     val ownership: HardeningOwnership,
     val fixedSeedProvided: Boolean = false,
     val fixedSeedHash: String? = null,
+    val dependencyMetadata: DependencyMetadataMode = DependencyMetadataMode.PRESERVE,
+    val structuralMetadataEntryCount: Int = 0,
 ) {
     init {
         require(fixedSeedProvided == (fixedSeedHash != null)) {
@@ -68,6 +75,8 @@ data class HardenedBundlePlanRequest(
 
 data class HardenedBundlePlan(
     val replacements: List<BundleEntryReplacement>,
+    val removals: Set<String>,
+    val additions: List<BundleEntryAddition>,
     val updatedRegistry: RegistrySnapshot,
     val report: HardenedBundlePlanReport,
     val ownedArtifactInventory: OwnedArtifactInventory,
@@ -94,6 +103,21 @@ class HardenedBundlePlanner(
         val lineageSeed = request.lineageSeed.copyOf()
         val contentSalt = request.contentSalt.copyOf()
         val entries = readEntries(ordinary)
+        val sourceAabSha256 = Sha256.file(ordinary)
+        val dependencyMetadataBytes = entries[BundleZipRewriter.DEPENDENCY_METADATA_PATH]
+        val removals = if (
+            request.dependencyMetadata == DependencyMetadataMode.OMIT && dependencyMetadataBytes != null
+        ) {
+            setOf(BundleZipRewriter.DEPENDENCY_METADATA_PATH)
+        } else {
+            emptySet()
+        }
+        val additions = BundleStructuralMetadata.generate(
+            contentSalt,
+            request.applicationId,
+            sourceAabSha256,
+            request.structuralMetadataEntryCount,
+        )
 
         val dexInventory = OwnedDexInventoryBuilder(repository, request.ownership).build(request.r8MappingText)
         val provenDescriptors = dexInventory.descriptorProofs
@@ -159,21 +183,41 @@ class HardenedBundlePlanner(
             "resource hardening did not change resources.pb"
         }
         val resourcePlan = planResources(
-            entries = entries,
-            inventory = resourceInventory,
-            tableResult = tableResult,
-            contentSalt = contentSalt,
-            minimumImageCoverage = request.minimumImageCoverage,
-            minimumImageSsim = request.minimumImageSsim,
-            minimumImagePHashDistance = request.minimumImagePHashDistance,
+            entries,
+            resourceInventory,
+            tableResult,
+            contentSalt,
+            request.minimumImageCoverage,
+            request.minimumImageSsim,
+            request.minimumImagePHashDistance,
         )
 
         val replacements = (dexPlan.replacements + resourcePlan.replacements)
             .sortedBy(BundleEntryReplacement::oldPath)
         validateReplacementClosure(entries.keys, replacements)
+        val bundleReport = PlannedBundleMetadataSummary(
+            request.dependencyMetadata,
+            when {
+                dependencyMetadataBytes == null -> DependencyMetadataStatus.ALREADY_ABSENT
+                request.dependencyMetadata == DependencyMetadataMode.OMIT -> DependencyMetadataStatus.REMOVED
+                else -> DependencyMetadataStatus.PRESERVED
+            },
+            dependencyMetadataBytes?.let(Sha256::hex),
+            additions.size,
+            additions.map(BundleEntryAddition::path),
+        )
+        val reportSchemaVersion = if (
+            request.dependencyMetadata != DependencyMetadataMode.PRESERVE ||
+            request.structuralMetadataEntryCount > 0 ||
+            resourcePlan.report.corpusImageCount > 0
+        ) {
+            2
+        } else {
+            1
+        }
         val report = HardenedBundlePlanReport(
-            1,
-            Sha256.file(ordinary),
+            reportSchemaVersion,
+            sourceAabSha256,
             Sha256.hex(contentSalt),
             request.namespace,
             request.generation,
@@ -182,6 +226,7 @@ class HardenedBundlePlanner(
             resourcePlan.report,
             request.fixedSeedProvided,
             request.fixedSeedHash,
+            bundleReport,
         )
         val ownedArtifactInventory = ownedArtifactInventory(
             request.ownership.modulePaths,
@@ -198,6 +243,8 @@ class HardenedBundlePlanner(
         ValidatedOwnedArtifactInventories(ownedArtifactInventory, ownedArtifactAnalysisInventory)
         return HardenedBundlePlan(
             replacements,
+            removals,
+            additions,
             allocation.registry,
             report,
             ownedArtifactInventory,
@@ -462,65 +509,119 @@ class HardenedBundlePlanner(
         minimumImageSsim: Double,
         minimumImagePHashDistance: Int,
     ): ResourcePlan {
-        val pngDiversifier = PngDiversifier(minimumImageSsim, minimumImagePHashDistance)
+        val ordinaryImageCorpus = OrdinaryImageCorpus.fromAabEntries(entries)
+        val pngDiversifier = PngDiversifier(minimumImageSsim, minimumImagePHashDistance, ordinaryImageCorpus)
         val webpDiversifier = WebpDiversifier(
-            minimumSsim = minimumImageSsim,
-            minimumPHashDistance = minimumImagePHashDistance,
-            encodingPolicy = WebpEncodingPolicy.GLOBAL_AAB_BUDGET,
+            minimumImageSsim,
+            minimumImagePHashDistance,
+            WebpDiversifier.HARD_MAXIMUM_BYTE_GROWTH_RATIO,
+            WebpEncodingPolicy.GLOBAL_AAB_BUDGET,
+            ordinaryImageCorpus,
         )
         val imageResults = linkedMapOf<String, DiversifiedImage>()
         inventory.asSequence()
-            .filter { it.type == ResourceType.DRAWABLE && it.aabPath != null && it.bytes != null }
+            .filter {
+                (it.type == ResourceType.DRAWABLE ||
+                    (it.type == ResourceType.MIPMAP && it.imageDiversificationEnabled)) &&
+                    it.aabPath != null && it.bytes != null
+            }
             .filter { resource ->
                 val path = requireNotNull(resource.aabPath).lowercase()
-                path.endsWith(".png") || path.endsWith(".webp")
+                path.endsWith(".png") || path.endsWith(".webp") ||
+                    (resource.imageDiversificationEnabled &&
+                        (path.endsWith(".jpg") || path.endsWith(".jpeg")))
             }
             .distinctBy { it.aabPath }
             .sortedBy { it.aabPath }
             .forEach { resource ->
                 val oldPath = requireNotNull(resource.aabPath)
                 val originalHash = Sha256.hex(requireNotNull(resource.bytes))
-                imageResults[oldPath] = if (oldPath.lowercase().endsWith(".webp")) {
-                    val result = webpDiversifier.diversify(resource, contentSalt)
-                    val metrics = result.metrics
-                    DiversifiedImage(
-                        transformedBytes = result.transformedBytes,
-                        originalByteCount = requireNotNull(resource.bytes).size.toLong(),
-                        report = PlannedImageEntry(
-                            oldPath = oldPath,
-                            newPath = tableResult.zipPathRenames[oldPath],
-                            status = result.status,
-                            reason = result.reason.toImageReason(),
-                            originalSha256 = originalHash,
-                            transformedSha256 = metrics?.transformedSha256,
-                            width = metrics?.width,
-                            height = metrics?.height,
-                            alphaPreserved = metrics?.alphaPreserved,
-                            ssim = metrics?.ssim,
-                            pHashDistance = metrics?.pHashDistance,
-                        ),
+                val lowerPath = oldPath.lowercase()
+                val diversification = when {
+                    lowerPath.endsWith(".webp") -> webpDiversifier.diversify(resource, contentSalt).let {
+                        ImageDiversification(
+                            it.status,
+                            it.reason.toImageReason(),
+                            it.transformedBytes,
+                            it.metrics?.width,
+                            it.metrics?.height,
+                            it.metrics?.alphaPreserved,
+                            it.metrics?.ssim,
+                            it.metrics?.pHashDistance,
+                            it.nearestCorpusPHashDistance,
+                        )
+                    }
+                    lowerPath.endsWith(".png") && !resource.imageDiversificationEnabled -> ImageDiversification(
+                        ImageTransformStatus.EXCLUDED,
+                        pngDiversifier.exclusionReason(resource)
+                            ?: ImageIneligibilityReason.OUTSIDE_CONFIGURED_IMAGE_SCOPE,
+                        null,
+                        null,
+                        null,
+                        null,
+                        null,
+                        null,
+                        null,
                     )
-                } else {
-                    val result = pngDiversifier.diversify(resource, contentSalt)
-                    val metrics = result.metrics
-                    DiversifiedImage(
-                        transformedBytes = result.transformedBytes,
-                        originalByteCount = requireNotNull(resource.bytes).size.toLong(),
-                        report = PlannedImageEntry(
-                            oldPath = oldPath,
-                            newPath = tableResult.zipPathRenames[oldPath],
-                            status = result.status,
-                            reason = result.reason,
-                            originalSha256 = originalHash,
-                            transformedSha256 = metrics?.transformedSha256,
-                            width = metrics?.width,
-                            height = metrics?.height,
-                            alphaPreserved = metrics?.alphaPreserved,
-                            ssim = metrics?.ssim,
-                            pHashDistance = metrics?.pHashDistance,
-                        ),
+                    lowerPath.endsWith(".png") -> pngDiversifier.diversify(resource, contentSalt).let {
+                        ImageDiversification(
+                            it.status,
+                            it.reason,
+                            it.transformedBytes,
+                            it.metrics?.width,
+                            it.metrics?.height,
+                            it.metrics?.alphaPreserved,
+                            it.metrics?.ssim,
+                            it.metrics?.pHashDistance,
+                            it.nearestCorpusPHashDistance,
+                        )
+                    }
+                    else -> ImageDiversification(
+                        ImageTransformStatus.INELIGIBLE,
+                        ImageIneligibilityReason.UNSUPPORTED_FORMAT,
+                        null,
+                        null,
+                        null,
+                        null,
+                        null,
+                        null,
+                        null,
                     )
                 }
+                val transformedBytes = diversification.transformedBytes
+                val effectiveStatus = if (transformedBytes != null && !transformedBytes.contentEquals(resource.bytes)) {
+                    ImageTransformStatus.TRANSFORMED
+                } else {
+                    diversification.status
+                }
+                val effectiveReason = if (effectiveStatus == ImageTransformStatus.TRANSFORMED) {
+                    ImageIneligibilityReason.TRANSFORMED
+                } else {
+                    diversification.reason
+                }
+                imageResults[oldPath] = DiversifiedImage(
+                    transformedBytes,
+                    requireNotNull(resource.bytes).size.toLong(),
+                    PlannedImageEntry(
+                        oldPath,
+                        tableResult.zipPathRenames[oldPath],
+                        effectiveStatus,
+                        effectiveReason,
+                        originalHash,
+                        transformedBytes?.takeUnless { it.contentEquals(resource.bytes) }?.let(Sha256::hex),
+                        diversification.width,
+                        diversification.height,
+                        diversification.alphaPreserved,
+                        diversification.ssim,
+                        diversification.pHashDistance,
+                        null,
+                        null,
+                        false,
+                        false,
+                        null,
+                        diversification.nearestCorpusPHashDistance,
+                    ),
+                )
             }
 
         val diversifiedTable = protoResourceDiversifier.diversifyResourceTable(tableResult.resourcesPb, contentSalt)
@@ -537,6 +638,7 @@ class HardenedBundlePlanner(
         tableResult.zipPathRenames.toSortedMap().forEach { (oldPath, newPath) ->
             val original = requireNotNull(entries[oldPath]) { "resource rename source is missing from AAB: $oldPath" }
             val imageBytes = imageResults[oldPath]?.transformedBytes
+                ?.takeUnless { it.contentEquals(original) }
             val resource = requireNotNull(resourcesByPath[oldPath]) {
                 "resource path rename is absent from the owned inventory: $oldPath"
             }
@@ -585,13 +687,17 @@ class HardenedBundlePlanner(
             require(requireNotNull(image.pHashDistance) >= minimumImagePHashDistance) {
                 "image ${image.oldPath} failed its pHash gate"
             }
+            require(requireNotNull(image.nearestCorpusPHashDistance) >= minimumImagePHashDistance) {
+                "image ${image.oldPath} conflicts with the ordinary AAB image corpus"
+            }
         }
         val eligibleImageCount = imageReports.count { it.status != ImageTransformStatus.EXCLUDED }
         val transformedImageCount = imageReports.count { it.status == ImageTransformStatus.TRANSFORMED }
         val imageCoverage = coverage(transformedImageCount, eligibleImageCount)
+        val coverageFailureDetails = imageCoverageFailureDetails(imageReports)
         require(imageCoverage + EPSILON >= minimumImageCoverage) {
             "safe bitmap coverage $imageCoverage ($transformedImageCount/$eligibleImageCount) is below " +
-                "$minimumImageCoverage"
+                "$minimumImageCoverage$coverageFailureDetails"
         }
         val eligibleImageBytes = imageResults.values
             .filter { it.report.status != ImageTransformStatus.EXCLUDED }
@@ -602,34 +708,55 @@ class HardenedBundlePlanner(
         val imageByteCoverage = coverage(transformedImageBytes, eligibleImageBytes)
         require(imageByteCoverage + EPSILON >= minimumImageCoverage) {
             "safe bitmap byte coverage $imageByteCoverage ($transformedImageBytes/$eligibleImageBytes bytes) is below " +
-                "$minimumImageCoverage"
+                "$minimumImageCoverage$coverageFailureDetails"
         }
         return ResourcePlan(
             replacements,
             PlannedResourceSummary(
-                inventoryVariantCount = inventory.size,
-                renamedResourceCount = renameReports.size,
-                renamedFileCount = renameReports.sumOf(PlannedResourceRename::renamedFileCount),
-                resourcesPbInputSha256 = Sha256.hex(requireNotNull(entries[RESOURCES_PB_PATH])),
-                resourcesPbOutputSha256 = Sha256.hex(diversifiedTable),
-                minimumImageCoverage = minimumImageCoverage,
-                minimumImageSsim = minimumImageSsim,
-                minimumImagePHashDistance = minimumImagePHashDistance,
-                eligibleImageCount = eligibleImageCount,
-                transformedImageCount = transformedImageCount,
-                imageCoverage = imageCoverage,
-                eligibleImageBytes = eligibleImageBytes,
-                transformedImageBytes = transformedImageBytes,
-                imageByteCoverage = imageByteCoverage,
-                transformedPngCount = imageReports.count {
+                inventory.size,
+                renameReports.size,
+                renameReports.sumOf(PlannedResourceRename::renamedFileCount),
+                Sha256.hex(requireNotNull(entries[RESOURCES_PB_PATH])),
+                Sha256.hex(diversifiedTable),
+                minimumImageCoverage,
+                minimumImageSsim,
+                minimumImagePHashDistance,
+                eligibleImageCount,
+                transformedImageCount,
+                imageCoverage,
+                eligibleImageBytes,
+                transformedImageBytes,
+                imageByteCoverage,
+                imageReports.count {
                     it.status == ImageTransformStatus.TRANSFORMED && it.oldPath.lowercase().endsWith(".png")
                 },
-                transformedWebpCount = imageReports.count {
+                imageReports.count {
                     it.status == ImageTransformStatus.TRANSFORMED && it.oldPath.lowercase().endsWith(".webp")
                 },
-                diversifiedProtoXmlCount = diversifiedProtoXmlCount,
-                renames = renameReports,
-                images = imageReports,
+                diversifiedProtoXmlCount,
+                renameReports,
+                imageReports,
+                imageReports.count {
+                    it.status == ImageTransformStatus.TRANSFORMED &&
+                        (it.oldPath.lowercase().endsWith(".jpg") || it.oldPath.lowercase().endsWith(".jpeg"))
+                },
+                ordinaryImageCorpus.imageCount,
+                if (ordinaryImageCorpus.imageCount == 0) {
+                    emptyList()
+                } else {
+                    ImageFormat.values().map { format ->
+                        val formatImages = imageResults.values.filter { image -> image.report.oldPath.hasFormat(format) }
+                        val eligible = formatImages.filter { it.report.status != ImageTransformStatus.EXCLUDED }
+                        val transformed = formatImages.filter { it.report.status == ImageTransformStatus.TRANSFORMED }
+                        PlannedImageFormatCoverage(
+                            format,
+                            eligible.size,
+                            transformed.size,
+                            eligible.sumOf(DiversifiedImage::originalByteCount),
+                            transformed.sumOf(DiversifiedImage::originalByteCount),
+                        )
+                    }
+                },
             ),
         )
     }
@@ -664,6 +791,9 @@ class HardenedBundlePlanner(
         }
         require(request.minimumImagePHashDistance in 11..64) {
             "minimum image pHash distance must be in 11..64"
+        }
+        require(request.structuralMetadataEntryCount in 0..64) {
+            "structural metadata entry count must be in 0..64"
         }
     }
 
@@ -700,6 +830,17 @@ class HardenedBundlePlanner(
     private fun coverage(numerator: Long, denominator: Long): Double =
         if (denominator == 0L) 1.0 else numerator.toDouble() / denominator
 
+    private fun imageCoverageFailureDetails(images: List<PlannedImageEntry>): String {
+        val ineligible = images.filter { it.status == ImageTransformStatus.INELIGIBLE }
+        if (ineligible.isEmpty()) return ""
+        val reasonCounts = ineligible.groupingBy(PlannedImageEntry::reason).eachCount().entries
+            .sortedBy { it.key.name }
+            .joinToString(",") { (reason, count) -> "${reason.name}=$count" }
+        val samples = ineligible.sortedBy(PlannedImageEntry::oldPath).take(8)
+            .joinToString(",") { image -> "${image.reason.name}:${image.oldPath}" }
+        return "; ineligibleReasons={$reasonCounts}; samples=[$samples]"
+    }
+
     private data class DexPlan(
         val replacements: List<BundleEntryReplacement>,
         val report: PlannedDexSummary,
@@ -715,6 +856,39 @@ class HardenedBundlePlanner(
         val originalByteCount: Long,
         val report: PlannedImageEntry,
     )
+
+    private data class ImageDiversification(
+        val status: ImageTransformStatus,
+        val reason: ImageIneligibilityReason,
+        val transformedBytes: ByteArray?,
+        val width: Int?,
+        val height: Int?,
+        val alphaPreserved: Boolean?,
+        val ssim: Double?,
+        val pHashDistance: Int?,
+        val nearestCorpusPHashDistance: Int?,
+    )
+
+    private fun canResizeImage(
+        resource: ResourceInventoryEntry,
+        diversification: ImageDiversification,
+        lowerPath: String,
+    ): Boolean {
+        if (resource.origin != ResourceOrigin.OWNED ||
+            resource.externallyNamed ||
+            resource.notificationIcon ||
+            resource.animation ||
+            lowerPath.endsWith(".9.png")
+        ) return false
+        if (lowerPath.endsWith(".jpg") || lowerPath.endsWith(".jpeg")) return true
+        return when {
+            diversification.status == ImageTransformStatus.EXCLUDED -> false
+            diversification.status == ImageTransformStatus.TRANSFORMED -> true
+            diversification.reason == ImageIneligibilityReason.NO_SAFE_PERTURBATION -> true
+            diversification.reason == ImageIneligibilityReason.BYTE_GROWTH_LIMIT -> true
+            else -> false
+        }
+    }
 
     private companion object {
         const val RESOURCES_PB_PATH = "base/resources.pb"
@@ -757,6 +931,13 @@ private fun WebpIneligibilityReason.toImageReason(): ImageIneligibilityReason = 
     WebpIneligibilityReason.UNVERIFIED_WEBP -> ImageIneligibilityReason.UNVERIFIED_WEBP
     WebpIneligibilityReason.NO_SAFE_PERTURBATION -> ImageIneligibilityReason.NO_SAFE_PERTURBATION
     WebpIneligibilityReason.BYTE_GROWTH_LIMIT -> ImageIneligibilityReason.BYTE_GROWTH_LIMIT
+    WebpIneligibilityReason.CORPUS_PHASH_CONFLICT -> ImageIneligibilityReason.CORPUS_PHASH_CONFLICT
+}
+
+private fun String.hasFormat(format: ImageFormat): Boolean = when (format) {
+    ImageFormat.PNG -> lowercase().endsWith(".png")
+    ImageFormat.WEBP -> lowercase().endsWith(".webp")
+    ImageFormat.JPEG -> lowercase().endsWith(".jpg") || lowercase().endsWith(".jpeg")
 }
 
 private val FIXED_SEED_SHA_256 = Regex("[0-9a-f]{64}")

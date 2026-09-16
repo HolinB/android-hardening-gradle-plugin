@@ -14,4 +14,10 @@ enum class ExternalNamesMode { PRESERVE_AND_REPORT }
 enum class BenchmarkMode { REPORT_ONLY }
 enum class SimilarityMode { OWNED_AAB_APK }
 enum class LegacyPluginMode { PRESERVE_UNMANAGED }
+enum class DependencyMetadataMode { PRESERVE, OMIT }
 enum class HardcodedReferenceKind { CLASS_NAME, MEMBER_NAME, RESOURCE_NAME, ROUTE, URI, URL, FILE_NAME }
+enum class ImageFormat(val extension: String) {
+    PNG("png"),
+    WEBP("webp"),
+    JPEG("jpg"),
+}

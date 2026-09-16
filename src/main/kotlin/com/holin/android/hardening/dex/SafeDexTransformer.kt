@@ -280,16 +280,17 @@ class SafeDexTransformer {
                     } else {
                         val receiverRegister = initializedReceiverRegister(method, requireNotNull(implementation))
                         when (
-                            val weave = weaver.weave(
+                            val weave = weaveWithShingleFallback(
+                                weaver,
                                 requireNotNull(implementation),
                                 salt,
                                 methodId(method),
                                 requireNotNull(detourPaddingByMethod[methodId(method)]) {
                                     "selected eligible method has no detour budget"
                                 },
-                                expandConditionals = requireNotNull(implementation).tryBlocks.none(),
-                                receiverRegister = receiverRegister,
-                                opaqueDiamondCount = if (receiverRegister != null) {
+                                requireNotNull(implementation).tryBlocks.none(),
+                                receiverRegister,
+                                if (receiverRegister != null) {
                                     if (oldInstructions.size >= LONG_METHOD_INSTRUCTION_THRESHOLD) 3 else 1
                                 } else {
                                     0
@@ -428,6 +429,45 @@ class SafeDexTransformer {
                 publicizedClassDescriptors = request.publicClassDescriptors.toSortedSet(),
             ),
         )
+    }
+
+    private fun weaveWithShingleFallback(
+        weaver: SafeNopWeaver,
+        implementation: MethodImplementation,
+        salt: ByteArray,
+        methodId: String,
+        detourPaddingNopCount: Int,
+        expandConditionals: Boolean,
+        receiverRegister: Int?,
+        opaqueDiamondCount: Int,
+    ): NopWeaveResult {
+        val first = weaver.weave(
+            implementation,
+            salt,
+            methodId,
+            detourPaddingNopCount,
+            expandConditionals,
+            receiverRegister,
+            opaqueDiamondCount,
+        )
+        if (first !is NopWeaveResult.Candidate || first.shingleEffectiveness + EPSILON >= 1.0) {
+            return first
+        }
+        for (retry in 1..MAX_SHINGLE_WEAVE_RETRIES) {
+            val candidate = weaver.weave(
+                implementation,
+                salt,
+                "$methodId\u0000shingle-retry-$retry",
+                detourPaddingNopCount,
+                expandConditionals,
+                receiverRegister,
+                opaqueDiamondCount,
+            )
+            if (candidate is NopWeaveResult.Candidate && candidate.shingleEffectiveness + EPSILON >= 1.0) {
+                return candidate
+            }
+        }
+        return first
     }
 
     private fun meetsTransformationGates(
@@ -1030,11 +1070,12 @@ class SafeDexTransformer {
         const val MIN_BUDGET_UTILIZATION = 0.78
         const val MAX_BUDGET_UTILIZATION = 0.84
         const val MAX_BUDGET_SEARCH_ATTEMPTS = 8
+        const val MAX_SHINGLE_WEAVE_RETRIES = 16
         const val DETOUR_BUDGET_ID = "<detour-budget>"
         const val DETOUR_ORDER_SUFFIX = "\u0000detour-order"
         const val DETOUR_CAP_SUFFIX = "\u0000detour-cap"
         const val BOUNDED_PAYLOAD_SUFFIX = "\u0000bounded-payload\u0000"
-        val SALT_DOMAIN = "com.holin.android.hardening/1.2.0/safe-dex/v1\u0000".toByteArray(StandardCharsets.UTF_8)
+        val SALT_DOMAIN = "com.holin.android.hardening/1.3.0/safe-dex/v1\u0000".toByteArray(StandardCharsets.UTF_8)
         val COROUTINE_SUPERCLASS_MARKERS = listOf(
             "BaseContinuationImpl",
             "ContinuationImpl",

@@ -2,6 +2,7 @@ package com.holin.android.hardening.resources
 
 import com.android.aapt.Resources
 import com.holin.android.hardening.HardeningOwnership
+import com.holin.android.hardening.ImageFormat
 import com.holin.android.hardening.testHardeningOwnership
 import java.nio.file.Path
 import kotlin.io.path.createDirectories
@@ -17,6 +18,39 @@ import org.junit.jupiter.api.io.TempDir
 class OwnedResourceInventoryBuilderTest {
     @TempDir
     lateinit var repository: Path
+
+    @Test
+    fun `skips test and generated resource paths before image include matching`() {
+        gitInit()
+        resource("app/src/main/res/drawable/owned.png", byteArrayOf(1))
+        resource("app/src/main/res/drawable/test/blocked.png", byteArrayOf(2))
+        resource("app/src/main/res/drawable/generated/blocked_generated.png", byteArrayOf(3))
+        resource("app/src/main/res/drawable/build/blocked_build.png", byteArrayOf(4))
+        val module = HardeningOwnership.OwnedModule(
+            ":app",
+            repository.resolve("app"),
+            setOf("main"),
+            HardeningOwnership.ResolvedSourceRoots(
+                emptySet(),
+                emptySet(),
+                setOf(repository.resolve("app/src/main/res")),
+                emptySet(),
+            ),
+            images = HardeningOwnership.ImageScope.resolve(
+                setOf("src/main/res/**/*.png"),
+                emptySet(),
+                setOf(ImageFormat.PNG),
+            ),
+        )
+
+        val names = OwnedResourceInventoryBuilder(
+            repository,
+            HardeningOwnership(listOf(module), emptySet(), emptySet()),
+        ).scanSourceNames()
+
+        assertTrue(names.any { it.name == "owned" })
+        assertTrue(names.none { it.name == "blocked" || it.name == "blocked_generated" || it.name == "blocked_build" })
+    }
 
     @Test
     fun `uses resolved custom resource roots and explicit selector WebP scope`() {

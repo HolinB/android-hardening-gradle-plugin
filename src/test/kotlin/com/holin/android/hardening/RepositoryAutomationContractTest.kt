@@ -61,8 +61,8 @@ class RepositoryAutomationContractTest {
             "./scripts/verify-gradle-wrapper.sh",
             "./gradlew --no-daemon checkHardeningEnvironment check verifyPortableHardeningPlugin",
             "./gradlew --no-daemon --rerun-tasks packagePortableHardeningPlugin verifyPortableHardeningPlugin",
-            "cp build/distributions/hardening-gradle-plugin-1.2.0-portable-maven.zip \"\$RUNNER_TEMP/portable-first.zip\"",
-            "cmp --silent \"\$RUNNER_TEMP/portable-first.zip\" build/distributions/hardening-gradle-plugin-1.2.0-portable-maven.zip",
+            "cp build/distributions/hardening-gradle-plugin-1.3.0-portable-maven.zip \"\$RUNNER_TEMP/portable-first.zip\"",
+            "cmp --silent \"\$RUNNER_TEMP/portable-first.zip\" build/distributions/hardening-gradle-plugin-1.3.0-portable-maven.zip",
         )
         val forcedRebuilds = workflow.commands.count { command ->
             command == "./gradlew --no-daemon --rerun-tasks packagePortableHardeningPlugin verifyPortableHardeningPlugin"
@@ -97,8 +97,8 @@ class RepositoryAutomationContractTest {
             "./gradlew uploadArchives",
             "./gradlew publish",
             "adb devices",
-            "gh release upload v1.2.0 plugin.zip",
-            "git tag v1.2.0",
+            "gh release upload v1.3.0 plugin.zip",
+            "git tag v1.3.0",
         )
 
         assertEquals(forbidden, forbiddenCommands(forbidden))
@@ -121,8 +121,8 @@ class RepositoryAutomationContractTest {
             "./scripts/verify-gradle-wrapper.sh",
             "./gradlew --no-daemon prepareOfflineTestKitEnvironment",
             "./gradlew --offline --no-daemon --rerun-tasks packageOfflineHardeningTestKit verifyOfflineHardeningTestKit",
-            "cp build/distributions/hardening-gradle-plugin-1.2.0-offline-testkit.zip \"\$RUNNER_TEMP/offline-testkit-first.zip\"",
-            "cmp --silent \"\$RUNNER_TEMP/offline-testkit-first.zip\" build/distributions/hardening-gradle-plugin-1.2.0-offline-testkit.zip",
+            "cp build/distributions/hardening-gradle-plugin-1.3.0-offline-testkit.zip \"\$RUNNER_TEMP/offline-testkit-first.zip\"",
+            "cmp --silent \"\$RUNNER_TEMP/offline-testkit-first.zip\" build/distributions/hardening-gradle-plugin-1.3.0-offline-testkit.zip",
         )
         val localRebuilds = workflow.commands.count { command ->
             command ==

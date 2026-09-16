@@ -305,6 +305,7 @@ internal class UniversalApkAssembler(
                 request.signingMaterial,
             )
             extractUniversalApk(apksArchive, bundletoolApk)
+            requireBundleMetadataNotDelivered(bundletoolApk)
             val bundletoolApkSignerHash = apkSigner(bundletoolApk)
             require(bundletoolApkSignerHash == aabSignerHash) {
                 "universal APK signer certificate does not match the verified hardened AAB"
@@ -373,6 +374,19 @@ internal class UniversalApkAssembler(
 
     private fun force(path: Path) {
         FileChannel.open(path, READ).use { channel -> channel.force(true) }
+    }
+}
+
+internal fun requireBundleMetadataNotDelivered(apk: Path) {
+    val signature = Files.newInputStream(apk).use { input -> ByteArray(4).also { input.read(it) } }
+    if (!signature.copyOfRange(0, 2).contentEquals(byteArrayOf('P'.code.toByte(), 'K'.code.toByte()))) return
+    ZipFile(apk.toFile()).use { archive ->
+        val names = archive.entries().asSequence().map { it.name }.toList()
+        BundleZipRewriter.requireSafeUniqueEntryNames(names)
+        require(names.none { name ->
+            name.equals(BundleZipRewriter.DEPENDENCY_METADATA_PATH, true) ||
+                name.startsWith(BundleStructuralMetadata.STRUCTURE_PREFIX, true)
+        }) { "AAB-only hardening metadata was delivered into the universal APK" }
     }
 }
 

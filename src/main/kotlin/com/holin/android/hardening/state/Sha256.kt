@@ -23,6 +23,11 @@ enum class CanonicalContentDomain(
         "com.holin.android.hardening/1.2.0/canonical-payload/v1\u0000".toByteArray(Charsets.UTF_8),
         "com.holin.android.hardening/1.2.0/canonical-file/v1\u0000".toByteArray(Charsets.UTF_8),
     ),
+    HOLIN_1_3(
+        "com.holin.android.hardening/1.3.0",
+        "com.holin.android.hardening/1.3.0/canonical-payload/v1\u0000".toByteArray(Charsets.UTF_8),
+        "com.holin.android.hardening/1.3.0/canonical-file/v1\u0000".toByteArray(Charsets.UTF_8),
+    ),
     ;
 
     companion object {
@@ -49,7 +54,7 @@ object Sha256 {
         }
     }
 
-    fun canonicalPayload(root: Path): String = canonicalPayload(root, CanonicalContentDomain.HOLIN_1_2)
+    fun canonicalPayload(root: Path): String = canonicalPayload(root, CanonicalContentDomain.HOLIN_1_3)
 
     fun canonicalPayload(root: Path, domain: CanonicalContentDomain): String {
         require(Files.isDirectory(root, LinkOption.NOFOLLOW_LINKS)) { "payload root is not a directory: $root" }
@@ -86,7 +91,7 @@ object Sha256 {
         return digest.digest().toHex()
     }
 
-    fun canonicalNode(path: Path): String = canonicalNode(path, CanonicalContentDomain.HOLIN_1_2)
+    fun canonicalNode(path: Path): String = canonicalNode(path, CanonicalContentDomain.HOLIN_1_3)
 
     fun canonicalNode(path: Path, domain: CanonicalContentDomain): String {
         if (Files.isDirectory(path, LinkOption.NOFOLLOW_LINKS)) return canonicalPayload(path, domain)

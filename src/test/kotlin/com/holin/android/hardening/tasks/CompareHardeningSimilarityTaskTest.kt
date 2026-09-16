@@ -128,7 +128,7 @@ class CompareHardeningSimilarityTaskTest {
                             "com.example.demo.match",
                             "com.example.demo.match",
                             "legacy-v1",
-                            "com.holin.android.hardening/1.2.0",
+                            "com.holin.android.hardening/1.3.0",
                             "1".repeat(64),
                             "2".repeat(64),
                             "00000000-0000-0000-0000-000000000001",

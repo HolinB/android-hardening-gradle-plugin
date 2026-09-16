@@ -17,6 +17,7 @@ class OwnedApkBinaryXmlTargetSelector {
                 }
                 BundleRewriteAction.PRESERVED,
                 BundleRewriteAction.REMOVED,
+                BundleRewriteAction.ADDED,
                 -> null
             }
         }
@@ -52,6 +53,6 @@ object ApkBinaryXmlTargetPathDigest {
         update(value)
     }
 
-    private const val DOMAIN = "com.holin.android.hardening/1.2.0/apk-binary-xml-target-paths/v1"
+    private const val DOMAIN = "com.holin.android.hardening/1.3.0/apk-binary-xml-target-paths/v1"
     private val APK_XML_PATH = Regex("res/(?:[^/]+/)+[^/]+\\.xml")
 }

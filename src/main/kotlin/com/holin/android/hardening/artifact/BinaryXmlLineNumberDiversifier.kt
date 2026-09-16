@@ -68,7 +68,7 @@ class BinaryXmlLineNumberDiversifier {
     private fun intBytes(value: Int): ByteArray = ByteBuffer.allocate(Int.SIZE_BYTES).putInt(value).array()
 
     private companion object {
-        const val DOMAIN = "com.holin.android.hardening/1.2.0/apk-binary-xml-line-number/v1"
+        const val DOMAIN = "com.holin.android.hardening/1.3.0/apk-binary-xml-line-number/v1"
         val SHA_256 = Regex("[0-9a-f]{64}")
     }
 }

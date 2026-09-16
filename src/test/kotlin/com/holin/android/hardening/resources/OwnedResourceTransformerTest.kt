@@ -1,9 +1,11 @@
 package com.holin.android.hardening.resources
 
+import com.holin.android.hardening.ImageFormat
 import java.awt.Color
 import java.awt.image.BufferedImage
 import java.io.ByteArrayOutputStream
 import java.security.MessageDigest
+import java.util.zip.CRC32
 import javax.imageio.ImageIO
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -128,6 +130,84 @@ class OwnedResourceTransformerTest {
     }
 
     @Test
+    fun `animated png remains excluded even when dimension resizing is enabled`() {
+        val entry = ResourceInventoryEntry(
+            module = ":app",
+            resourceId = 0x7f020010,
+            type = ResourceType.DRAWABLE,
+            name = "animated",
+            aabPath = "base/res/drawable/animated.png",
+            bytes = animatedPng(texturedPng(4, 4)),
+            imageFormat = ImageFormat.PNG,
+            imageDiversificationEnabled = true,
+        )
+
+        val result = OwnedResourceTransformer(lineageSeed, minimumImageCoverage = 0.0)
+            .transform(listOf(entry), generation = 1, contentSalt = "salt".toByteArray())
+
+        val image = result.report.images.single()
+        assertEquals(ImageTransformStatus.EXCLUDED, image.status)
+        assertEquals(ImageIneligibilityReason.ANIMATION, image.reason)
+        assertFalse(image.dimensionChanged)
+        assertTrue(result.report.exclusions.any { it.reason == ResourceExclusionReason.ANIMATION })
+        assertTrue(result.outputEntries.none { it.oldPath == entry.aabPath })
+    }
+
+    @Test
+    fun `scoped jpeg reports resized dimensions and transformed bytes`() {
+        val entry = ResourceInventoryEntry(
+            module = ":app",
+            resourceId = 0x7f020011,
+            type = ResourceType.DRAWABLE,
+            name = "photo",
+            aabPath = "base/res/drawable/photo.jpg",
+            bytes = encodedImage(3, 2, "jpeg"),
+            imageFormat = ImageFormat.JPEG,
+            imageDiversificationEnabled = true,
+        )
+
+        val result = OwnedResourceTransformer(lineageSeed, minimumImageCoverage = 1.0)
+            .transform(listOf(entry), generation = 1, contentSalt = "jpeg".toByteArray())
+
+        val report = result.report.images.single()
+        val output = result.outputEntries.single()
+        assertEquals(ImageTransformStatus.TRANSFORMED, report.status)
+        assertEquals(3, report.originalWidth)
+        assertEquals(2, report.originalHeight)
+        assertEquals(5, report.newWidth)
+        assertEquals(3, report.newHeight)
+        assertTrue(report.dimensionChanged)
+        assertEquals(ResourceEntryTransformAction.RENAMED_AND_TRANSFORMED, output.action)
+        assertFalse(output.bytes.contentEquals(entry.bytes))
+        val decoded = ImageIO.read(output.bytes.inputStream())
+        assertEquals(5, decoded.width)
+        assertEquals(3, decoded.height)
+    }
+
+    @Test
+    fun `image resize codec failure is reported and omitted from output`() {
+        val entry = ResourceInventoryEntry(
+            module = ":app",
+            resourceId = 0x7f020012,
+            type = ResourceType.DRAWABLE,
+            name = "broken",
+            aabPath = "base/res/drawable/broken.jpg",
+            bytes = "not-an-image".toByteArray(),
+            imageFormat = ImageFormat.JPEG,
+            imageDiversificationEnabled = true,
+        )
+
+        val result = OwnedResourceTransformer(lineageSeed, minimumImageCoverage = 0.0)
+            .transform(listOf(entry), generation = 1, contentSalt = "fallback".toByteArray())
+
+        val report = result.report.images.single()
+        assertEquals(ImageTransformStatus.INELIGIBLE, report.status)
+        assertTrue(report.resizeFallback)
+        assertEquals(ImageDimensionFallbackReason.DECODE_FAILED.name, report.resizeFallbackReason)
+        assertTrue(result.outputEntries.isEmpty())
+    }
+
+    @Test
     fun `non-owned generated and externally named entries are excluded from rename allocation`() {
         val bytes = "<layout/>".toByteArray()
         val inventory = listOf(
@@ -171,6 +251,45 @@ class OwnedResourceTransformerTest {
             assertTrue(ImageIO.write(image, "png", output))
             output.toByteArray()
         }
+    }
+
+    private fun animatedPng(staticPng: ByteArray): ByteArray {
+        val iend = byteArrayOf(0, 0, 0, 0, 73, 69, 78, 68, -82, 66, 96, -126)
+        val index = staticPng.indexOfSubsequence(iend)
+        check(index >= 0)
+        val type = "acTL".encodeToByteArray()
+        val payload = byteArrayOf(0, 0, 0, 1, 0, 0, 0, 0)
+        val crc = CRC32().apply {
+            update(type)
+            update(payload)
+        }.value.toInt()
+        val chunk = byteArrayOf(
+            0, 0, 0, payload.size.toByte(),
+        ) + type + payload + byteArrayOf(
+            (crc ushr 24).toByte(),
+            (crc ushr 16).toByte(),
+            (crc ushr 8).toByte(),
+            crc.toByte(),
+        )
+        return staticPng.copyOfRange(0, index) + chunk + staticPng.copyOfRange(index, staticPng.size)
+    }
+
+    private fun encodedImage(width: Int, height: Int, format: String): ByteArray {
+        val image = BufferedImage(width, height, BufferedImage.TYPE_INT_RGB)
+        for (y in 0 until height) {
+            for (x in 0 until width) image.setRGB(x, y, Color(40 + x * 30, 50 + y * 30, 90).rgb)
+        }
+        return ByteArrayOutputStream().use { output ->
+            assertTrue(ImageIO.write(image, format, output))
+            output.toByteArray()
+        }
+    }
+
+    private fun ByteArray.indexOfSubsequence(needle: ByteArray): Int {
+        for (index in 0..(size - needle.size)) {
+            if (copyOfRange(index, index + needle.size).contentEquals(needle)) return index
+        }
+        return -1
     }
 
     private fun resource(type: ResourceType, name: String, extension: String): ResourceInventoryEntry =

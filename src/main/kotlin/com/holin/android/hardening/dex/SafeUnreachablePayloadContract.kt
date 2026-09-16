@@ -122,6 +122,6 @@ internal object SafeUnreachablePayloadContract {
     }
 
     private val MARKER_DOMAIN =
-        "com.holin.android.hardening/1.2.0/unreachable-string-marker/v1\u0000".toByteArray(StandardCharsets.US_ASCII)
+        "com.holin.android.hardening/1.3.0/unreachable-string-marker/v1\u0000".toByteArray(StandardCharsets.US_ASCII)
     private const val MARKER_ALPHABET = "0123456789abcdefghijklmnopqrstuv"
 }

@@ -105,7 +105,7 @@ class PortablePublicationContractTest {
         val buildLogic = root.resolve("build.gradle.kts").readText()
         val readme = root.resolve("README.md").readText()
         val englishReadme = root.resolve("README.en.md").readText()
-        val checksumName = "hardening-gradle-plugin-1.2.0-portable-maven.zip.sha256"
+        val checksumName = "hardening-gradle-plugin-1.3.0-portable-maven.zip.sha256"
 
         assertTrue(
             buildLogic.contains("hardening-gradle-plugin-\${project.version}-portable-maven.zip.sha256"),
@@ -138,7 +138,7 @@ class PortablePublicationContractTest {
         val REQUIRED_BUILD_LOGIC_SNIPPETS = listOf(
             "`maven-publish`",
             "group = \"com.holin.android.hardening\"",
-            "version = \"1.2.0\"",
+            "version = \"1.3.0\"",
             "artifactId = \"hardening-gradle-plugin\"",
             "id = \"com.holin.android.hardening\"",
             "implementationClass = \"com.holin.android.hardening.AndroidHardeningPlugin\"",

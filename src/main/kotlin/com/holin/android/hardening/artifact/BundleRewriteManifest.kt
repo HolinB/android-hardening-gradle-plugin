@@ -13,6 +13,7 @@ enum class BundleRewriteAction {
     RENAMED,
     TRANSFORMED,
     REMOVED,
+    ADDED,
 }
 
 /** The verifier family that establishes a transformed entry's semantic equivalence. */
@@ -57,6 +58,9 @@ data class BundleRewriteEntry(
 
         fun removed(path: String, sha256: String): BundleRewriteEntry =
             BundleRewriteEntry(BundleRewriteAction.REMOVED, path, sha256, null, null)
+
+        fun added(path: String, sha256: String): BundleRewriteEntry =
+            BundleRewriteEntry(BundleRewriteAction.ADDED, null, null, path, sha256)
     }
 
     private fun requireActionShape() {
@@ -76,10 +80,18 @@ data class BundleRewriteEntry(
             BundleRewriteAction.REMOVED -> require(
                 oldPath != null && oldSha256 != null && newPath == null && newSha256 == null && semanticVerifier == null,
             ) { "removed rewrite entries must have only the original path and hash" }
+            BundleRewriteAction.ADDED -> require(
+                oldPath == null && oldSha256 == null && newPath != null && newSha256 != null && semanticVerifier == null,
+            ) { "added rewrite entries must have only the new path and hash" }
         }
-        require(action == BundleRewriteAction.REMOVED ||
+        require(action == BundleRewriteAction.REMOVED || action == BundleRewriteAction.ADDED ||
             listOfNotNull(oldPath, newPath).none(BundleZipRewriter::isHardeningMetadata)
         ) { "only a removed entry may reference prior hardening metadata" }
+        if (action == BundleRewriteAction.ADDED) {
+            require(requireNotNull(newPath).startsWith(BundleStructuralMetadata.STRUCTURE_PREFIX)) {
+                "added rewrite entries must use the hardening structure metadata prefix"
+            }
+        }
     }
 
     private fun requireSafePath(path: String) {
@@ -119,6 +131,7 @@ data class BundleRewriteVerificationResult(
     val renamedEntryCount: Int,
     val transformedEntryCount: Int,
     val removedEntryCount: Int,
+    val addedEntryCount: Int,
 )
 
 /** Verifies every non-signature AAB entry against its detached rewrite record. */
@@ -156,6 +169,10 @@ class BundleRewriteVerifier {
                     require(newHash == entry.newSha256) { "rewrite manifest transformed entry hash does not match" }
                 }
                 BundleRewriteAction.REMOVED -> Unit
+                BundleRewriteAction.ADDED -> {
+                    val newHash = candidateEntries[requireNotNull(entry.newPath)]
+                    require(newHash == entry.newSha256) { "rewrite manifest added entry hash does not match" }
+                }
             }
         }
 
@@ -182,10 +199,11 @@ class BundleRewriteVerifier {
             "a transformed rewrite entry lacks successful semantic verification"
         }
         return BundleRewriteVerificationResult(
-            preservedEntryCount = manifest.entries.count { it.action == BundleRewriteAction.PRESERVED },
-            renamedEntryCount = manifest.entries.count { it.action == BundleRewriteAction.RENAMED },
-            transformedEntryCount = manifest.entries.count { it.action == BundleRewriteAction.TRANSFORMED },
-            removedEntryCount = manifest.entries.count { it.action == BundleRewriteAction.REMOVED },
+            manifest.entries.count { it.action == BundleRewriteAction.PRESERVED },
+            manifest.entries.count { it.action == BundleRewriteAction.RENAMED },
+            manifest.entries.count { it.action == BundleRewriteAction.TRANSFORMED },
+            manifest.entries.count { it.action == BundleRewriteAction.REMOVED },
+            manifest.entries.count { it.action == BundleRewriteAction.ADDED },
         )
     }
 
@@ -216,7 +234,7 @@ class BundleRewriteVerifier {
 /** Canonical external persistence for a rewrite manifest; it is never stored in an AAB. */
 object BundleRewriteManifestCodec {
     fun encode(manifest: BundleRewriteManifest): String = buildString {
-        append("{\"schemaVersion\":1,\"originalAabSha256\":").append(json(manifest.originalAabSha256))
+        append("{\"schemaVersion\":2,\"originalAabSha256\":").append(json(manifest.originalAabSha256))
         append(",\"contentSaltSha256\":").append(json(manifest.contentSaltSha256)).append(",\"entries\":[")
         manifest.entries.forEachIndexed { index, entry ->
             if (index > 0) append(',')
@@ -235,7 +253,7 @@ object BundleRewriteManifestCodec {
         require(root.keys == setOf("schemaVersion", "originalAabSha256", "contentSaltSha256", "entries")) {
             "rewrite manifest has an invalid schema"
         }
-        require(root["schemaVersion"] == 1) { "unsupported rewrite manifest schema" }
+        require(root["schemaVersion"] == 1 || root["schemaVersion"] == 2) { "unsupported rewrite manifest schema" }
         val entries = root["entries"] as? List<*> ?: invalid("rewrite manifest entries must be an array")
         return BundleRewriteManifest(
             originalAabSha256 = root.string("originalAabSha256"),

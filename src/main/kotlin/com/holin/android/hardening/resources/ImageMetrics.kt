@@ -19,6 +19,7 @@ data class PngComparisonMetrics(
     val pHashDistance: Int,
     val originalSha256: String,
     val transformedSha256: String,
+    val nearestCorpusPHashDistance: Int? = null,
 )
 
 object ImageMetrics {
@@ -30,14 +31,14 @@ object ImageMetrics {
         }
         val alphaPreserved = alphaSamplesEqual(before, after)
         return PngComparisonMetrics(
-            width = before.image.width,
-            height = before.image.height,
-            alphaPreserved = alphaPreserved,
-            ssim = structuralSimilarity(before.image, after.image),
-            pHashDistance = perceptualHash(before.image).bits.zip(perceptualHash(after.image).bits)
+            before.image.width,
+            before.image.height,
+            alphaPreserved,
+            structuralSimilarity(before.image, after.image),
+            perceptualHash(before.image).bits.zip(perceptualHash(after.image).bits)
                 .count { (left, right) -> left != right },
-            originalSha256 = sha256(original),
-            transformedSha256 = sha256(transformed),
+            sha256(original),
+            sha256(transformed),
         )
     }
 
@@ -279,13 +280,44 @@ internal object ImageDiversificationCandidates {
         TARGET_EXTRAS.forEachIndexed { planIndex, extra ->
             val targetCount = (minimumPHashDistance + extra).coerceAtMost(PHASH_BITS - 1)
             val selected = saltedSelection(
-                ordered = orderedFrequencies,
-                targetCount = targetCount,
-                seed = seed xor (planIndex + 1L) * PLAN_SEED_MIX,
+                orderedFrequencies,
+                targetCount,
+                seed xor (planIndex + 1L) * PLAN_SEED_MIX,
+                SALTED_POOL_SIZE,
             )
             DCT_MARGINS.forEach { margin ->
                 directedCandidate(source, originalHash, selected, margin)?.let {
                     yield(ImageDiversificationCandidate(it, ImageDiversificationCandidateKind.DIRECTED_DCT))
+                }
+            }
+        }
+
+        FALLBACK_TARGET_EXTRAS.forEachIndexed { planIndex, extra ->
+            val targetCount = (minimumPHashDistance + extra).coerceAtMost(PHASH_BITS - 1)
+            val selected = saltedSelection(
+                orderedFrequencies,
+                targetCount,
+                seed xor (planIndex + 1L) * FALLBACK_PLAN_SEED_MIX,
+                FALLBACK_SALTED_POOL_SIZE,
+            )
+            DCT_MARGINS.forEach { margin ->
+                directedCandidate(source, originalHash, selected, margin)?.let {
+                    yield(ImageDiversificationCandidate(it, ImageDiversificationCandidateKind.FALLBACK_DCT))
+                }
+            }
+        }
+
+        HIDDEN_DCT_TARGET_EXTRAS.forEachIndexed { planIndex, extra ->
+            val targetCount = (minimumPHashDistance + extra).coerceAtMost(PHASH_BITS - 1)
+            val selected = saltedSelection(
+                orderedFrequencies,
+                targetCount,
+                seed xor (planIndex + 1L) * HIDDEN_DCT_PLAN_SEED_MIX,
+                HIDDEN_DCT_SALTED_POOL_SIZE,
+            )
+            HIDDEN_DCT_MARGINS.forEach { margin ->
+                directedCandidate(source, originalHash, selected, margin, true)?.let {
+                    yield(ImageDiversificationCandidate(it, ImageDiversificationCandidateKind.HIDDEN_DCT))
                 }
             }
         }
@@ -295,9 +327,10 @@ internal object ImageDiversificationCandidates {
         ordered: List<Int>,
         targetCount: Int,
         seed: Long,
+        poolSize: Int,
     ): List<Int> {
         if (targetCount >= ordered.size) return ordered
-        val pool = ordered.take((targetCount + SALTED_POOL_SIZE).coerceAtMost(ordered.size)).toMutableList()
+        val pool = ordered.take((targetCount + poolSize).coerceAtMost(ordered.size)).toMutableList()
         Collections.shuffle(pool, Random(seed))
         return pool.take(targetCount)
     }
@@ -322,6 +355,7 @@ internal object ImageDiversificationCandidates {
         originalHash: PerceptualHash,
         selectedFrequencies: List<Int>,
         margin: Double,
+        transparentOnly: Boolean = false,
     ): BufferedImage? {
         val weights = Array(PHASH_HASH_SIZE) { DoubleArray(PHASH_HASH_SIZE) }
         selectedFrequencies.forEach { index ->
@@ -351,6 +385,10 @@ internal object ImageDiversificationCandidates {
                 val delta = luminanceDelta.roundToInt()
                 val argb = source.getRGB(x, y)
                 val alpha = argb ushr 24 and 0xff
+                if (transparentOnly && alpha != 0) {
+                    output.setRGB(x, y, argb)
+                    continue
+                }
                 val red = ((argb ushr 16 and 0xff) + delta).coerceIn(0, 255)
                 val green = ((argb ushr 8 and 0xff) + delta).coerceIn(0, 255)
                 val blue = ((argb and 0xff) + delta).coerceIn(0, 255)
@@ -374,9 +412,16 @@ internal object ImageDiversificationCandidates {
     private const val PHASH_BITS = PHASH_HASH_SIZE * PHASH_HASH_SIZE
     private const val RGB_MASK = 0x00ffffff
     private const val SALTED_POOL_SIZE = 6
+    private const val FALLBACK_SALTED_POOL_SIZE = 28
+    private const val HIDDEN_DCT_SALTED_POOL_SIZE = 36
     private const val PLAN_SEED_MIX = -7046029254386353131L
+    private const val FALLBACK_PLAN_SEED_MIX = -4658895280553007687L
+    private const val HIDDEN_DCT_PLAN_SEED_MIX = -7723592293110705685L
     private val TARGET_EXTRAS = intArrayOf(1, 3, 5, 9, 13, 21)
+    private val FALLBACK_TARGET_EXTRAS = intArrayOf(3, 7, 13, 21)
+    private val HIDDEN_DCT_TARGET_EXTRAS = intArrayOf(3, 7, 13, 21, 29)
     private val DCT_MARGINS = doubleArrayOf(0.5, 1.0, 2.0, 3.0, 4.0, 6.0, 8.0, 12.0, 16.0, 24.0, 32.0)
+    private val HIDDEN_DCT_MARGINS = doubleArrayOf(16.0, 32.0, 64.0, 96.0, 128.0, 192.0, 256.0, 384.0)
     private val TRANSPARENT_RGB = intArrayOf(
         0x101010,
         0x202020,
@@ -400,6 +445,8 @@ internal object ImageDiversificationCandidates {
 internal enum class ImageDiversificationCandidateKind {
     TRANSPARENT_RGB,
     DIRECTED_DCT,
+    FALLBACK_DCT,
+    HIDDEN_DCT,
 }
 
 internal data class ImageDiversificationCandidate(

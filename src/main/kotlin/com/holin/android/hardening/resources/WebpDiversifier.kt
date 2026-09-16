@@ -25,6 +25,7 @@ enum class WebpIneligibilityReason {
     UNVERIFIED_WEBP,
     NO_SAFE_PERTURBATION,
     BYTE_GROWTH_LIMIT,
+    CORPUS_PHASH_CONFLICT,
 }
 
 data class WebpComparisonMetrics(
@@ -36,6 +37,7 @@ data class WebpComparisonMetrics(
     val originalSha256: String,
     val transformedSha256: String,
     val byteGrowthRatio: Double,
+    val nearestCorpusPHashDistance: Int? = null,
 )
 
 data class WebpDiversificationResult(
@@ -45,6 +47,7 @@ data class WebpDiversificationResult(
     val metrics: WebpComparisonMetrics? = null,
     val bestRejectedSize: Int? = null,
     val bestRejectedMetrics: WebpComparisonMetrics? = null,
+    val nearestCorpusPHashDistance: Int? = null,
 )
 
 internal data class WebpEncodingProfile(
@@ -148,6 +151,7 @@ class WebpDiversifier(
     private val minimumPHashDistance: Int = HARD_MINIMUM_PHASH_DISTANCE,
     private val maximumByteGrowthRatio: Double = HARD_MAXIMUM_BYTE_GROWTH_RATIO,
     private val encodingPolicy: WebpEncodingPolicy = WebpEncodingPolicy.PER_IMAGE,
+    private val ordinaryImageCorpus: OrdinaryImageCorpus = OrdinaryImageCorpus.empty(),
 ) {
     private var encoder: WebpByteEncoder = ImageIoWebpByteEncoder
 
@@ -194,19 +198,23 @@ class WebpDiversifier(
             ratioLimitedBytes
         }
         var rejectedForGrowth = false
+        var rejectedForCorpus = false
+        var nearestRejectedCorpusDistance: Int? = null
         var bestRejectedCandidate: QualityCandidate? = null
 
         val encodingPlan = WebpEncodingPolicy.forSource(bytes)
         val originalSha256 = ImageMetrics.sha256(bytes)
         var encodedTransparentCandidates = 0
         var encodedDctCandidates = 0
+        var encodedFallbackDctCandidates = 0
+        var encodedHiddenDctCandidates = 0
         var generatedDctCandidates = 0
         for (candidate in ImageDiversificationCandidates.generateDetailed(
             source = source,
             minimumPHashDistance = minimumPHashDistance,
             seed = seedLong(saltedSeed),
         )) {
-            if (candidate.kind == ImageDiversificationCandidateKind.DIRECTED_DCT) {
+            if (candidate.kind != ImageDiversificationCandidateKind.TRANSPARENT_RGB) {
                 if (generatedDctCandidates >= MAX_DCT_SEARCH_CANDIDATES) break
                 generatedDctCandidates++
             }
@@ -214,6 +222,15 @@ class WebpDiversifier(
             val candidateHash = ImageMetrics.perceptualHash(candidateImage)
             val pHashDistance = WebpImageMetrics.pHashDistance(sourceHash, candidateHash)
             if (pHashDistance < minimumPHashDistance) continue
+            val nearestCandidateDistance = ordinaryImageCorpus.nearestPHashDistance(candidateImage)
+            if (nearestCandidateDistance != null && nearestCandidateDistance < minimumPHashDistance) {
+                rejectedForCorpus = true
+                nearestRejectedCorpusDistance = minOf(
+                    nearestRejectedCorpusDistance ?: nearestCandidateDistance,
+                    nearestCandidateDistance,
+                )
+                continue
+            }
             if (!ImageMetrics.alphaSamplesEqual(source, candidateImage)) continue
             val quickSimilarity = ImageMetrics.quickVisibleSimilarity(source, candidateImage)
             if (quickSimilarity < minimumSsim - QUICK_SSIM_PREFILTER_MARGIN) continue
@@ -223,8 +240,20 @@ class WebpDiversifier(
                     encodedTransparentCandidates++
                 }
                 ImageDiversificationCandidateKind.DIRECTED_DCT -> {
-                    if (encodedDctCandidates >= MAX_DCT_ENCODING_CANDIDATES) break
+                    if (encodedDctCandidates >= MAX_DCT_ENCODING_CANDIDATES) {
+                        if (ordinaryImageCorpus.imageCount == 0) break else continue
+                    }
                     encodedDctCandidates++
+                }
+                ImageDiversificationCandidateKind.FALLBACK_DCT -> {
+                    if (ordinaryImageCorpus.imageCount == 0) break
+                    if (encodedFallbackDctCandidates >= MAX_FALLBACK_DCT_ENCODING_CANDIDATES) continue
+                    encodedFallbackDctCandidates++
+                }
+                ImageDiversificationCandidateKind.HIDDEN_DCT -> {
+                    if (ordinaryImageCorpus.imageCount == 0) break
+                    if (encodedHiddenDctCandidates >= MAX_HIDDEN_DCT_ENCODING_CANDIDATES) break
+                    encodedHiddenDctCandidates++
                 }
             }
             var fastEncoded = false
@@ -239,6 +268,10 @@ class WebpDiversifier(
                     maximumOutputBytes = maximumOutputBytes,
                 )
                 fastEncoded = fastEncoded || attempt.encoded
+                rejectedForCorpus = rejectedForCorpus || attempt.corpusConflict
+                attempt.corpusDistance?.let { distance ->
+                    nearestRejectedCorpusDistance = minOf(nearestRejectedCorpusDistance ?: distance, distance)
+                }
                 val qualityCandidate = attempt.qualityCandidate ?: continue
                 if (qualityCandidate.bytes.size <= maximumOutputBytes) {
                     return transformed(qualityCandidate)
@@ -257,6 +290,10 @@ class WebpDiversifier(
                     profile = profile,
                     maximumOutputBytes = maximumOutputBytes,
                 )
+                rejectedForCorpus = rejectedForCorpus || attempt.corpusConflict
+                attempt.corpusDistance?.let { distance ->
+                    nearestRejectedCorpusDistance = minOf(nearestRejectedCorpusDistance ?: distance, distance)
+                }
                 val qualityCandidate = attempt.qualityCandidate ?: continue
                 if (qualityCandidate.bytes.size <= maximumOutputBytes) {
                     return transformed(qualityCandidate)
@@ -269,9 +306,13 @@ class WebpDiversifier(
             bestRejectedCandidate?.let { return transformed(it) }
         }
         return ineligible(
-            reason = if (rejectedForGrowth) WebpIneligibilityReason.BYTE_GROWTH_LIMIT
-            else WebpIneligibilityReason.NO_SAFE_PERTURBATION,
-            bestRejectedCandidate = bestRejectedCandidate,
+            when {
+                rejectedForGrowth -> WebpIneligibilityReason.BYTE_GROWTH_LIMIT
+                rejectedForCorpus -> WebpIneligibilityReason.CORPUS_PHASH_CONFLICT
+                else -> WebpIneligibilityReason.NO_SAFE_PERTURBATION
+            },
+            bestRejectedCandidate,
+            nearestRejectedCorpusDistance,
         )
     }
 
@@ -290,20 +331,25 @@ class WebpDiversifier(
         val after = VerifiedWebp.read(candidateBytes) ?: return EncodingAttempt(encoded = true)
         if (source.width != after.width || source.height != after.height) return EncodingAttempt(encoded = true)
         val afterHash = ImageMetrics.perceptualHash(after)
+        val nearestCorpusPHashDistance = ordinaryImageCorpus.nearestPHashDistance(after)
+        if (nearestCorpusPHashDistance != null && nearestCorpusPHashDistance < minimumPHashDistance) {
+            return EncodingAttempt(true, null, true, nearestCorpusPHashDistance)
+        }
         val imageMetrics = WebpImageMetrics.compareImages(
             source,
             after,
             WebpImageMetrics.pHashDistance(sourceHash, afterHash),
         )
         val metrics = WebpComparisonMetrics(
-            width = source.width,
-            height = source.height,
-            alphaPreserved = imageMetrics.alphaPreserved,
-            ssim = imageMetrics.ssim,
-            pHashDistance = imageMetrics.pHashDistance,
-            originalSha256 = originalSha256,
-            transformedSha256 = ImageMetrics.sha256(candidateBytes),
-            byteGrowthRatio = (candidateBytes.size.toDouble() - originalBytes.size) / originalBytes.size,
+            source.width,
+            source.height,
+            imageMetrics.alphaPreserved,
+            imageMetrics.ssim,
+            imageMetrics.pHashDistance,
+            originalSha256,
+            ImageMetrics.sha256(candidateBytes),
+            (candidateBytes.size.toDouble() - originalBytes.size) / originalBytes.size,
+            nearestCorpusPHashDistance,
         )
         val successful = metrics.alphaPreserved &&
             metrics.ssim >= minimumSsim &&
@@ -328,9 +374,11 @@ class WebpDiversifier(
         entry.externallyNamed -> WebpIneligibilityReason.EXTERNALLY_NAMED
         entry.notificationIcon -> WebpIneligibilityReason.NOTIFICATION_ICON
         entry.animation -> WebpIneligibilityReason.ANIMATION
-        entry.type != ResourceType.DRAWABLE || entry.aabPath?.lowercase()?.endsWith(".webp") != true ||
+        entry.type !in setOf(ResourceType.DRAWABLE, ResourceType.MIPMAP) ||
+            entry.aabPath?.lowercase()?.endsWith(".webp") != true ||
             entry.bytes == null -> WebpIneligibilityReason.UNSUPPORTED_FORMAT
-        !entry.webpDiversificationEnabled -> WebpIneligibilityReason.OUTSIDE_CONFIGURED_WEBP_SCOPE
+        !entry.webpDiversificationEnabled && !entry.imageDiversificationEnabled ->
+            WebpIneligibilityReason.OUTSIDE_CONFIGURED_WEBP_SCOPE
         else -> null
     }
 
@@ -356,18 +404,25 @@ class WebpDiversifier(
     private fun ineligible(
         reason: WebpIneligibilityReason,
         bestRejectedCandidate: QualityCandidate? = null,
+        nearestCorpusPHashDistance: Int? = null,
     ) = WebpDiversificationResult(
-        status = ImageTransformStatus.INELIGIBLE,
-        reason = reason,
-        bestRejectedSize = bestRejectedCandidate?.bytes?.size,
-        bestRejectedMetrics = bestRejectedCandidate?.metrics,
+        ImageTransformStatus.INELIGIBLE,
+        reason,
+        null,
+        null,
+        bestRejectedCandidate?.bytes?.size,
+        bestRejectedCandidate?.metrics,
+        nearestCorpusPHashDistance,
     )
 
     private fun transformed(candidate: QualityCandidate) = WebpDiversificationResult(
-        status = ImageTransformStatus.TRANSFORMED,
-        reason = WebpIneligibilityReason.TRANSFORMED,
-        transformedBytes = candidate.bytes,
-        metrics = candidate.metrics,
+        ImageTransformStatus.TRANSFORMED,
+        WebpIneligibilityReason.TRANSFORMED,
+        candidate.bytes,
+        candidate.metrics,
+        null,
+        null,
+        candidate.metrics.nearestCorpusPHashDistance,
     )
 
     private fun seedLong(bytes: ByteArray): Long {
@@ -379,6 +434,8 @@ class WebpDiversifier(
     private data class EncodingAttempt(
         val encoded: Boolean,
         val qualityCandidate: QualityCandidate? = null,
+        val corpusConflict: Boolean = false,
+        val corpusDistance: Int? = null,
     )
 
     private data class QualityCandidate(
@@ -396,7 +453,9 @@ class WebpDiversifier(
         private const val QUICK_SSIM_PREFILTER_MARGIN = 0.01
         private const val MAX_TRANSPARENT_ENCODING_CANDIDATES = 1
         private const val MAX_DCT_ENCODING_CANDIDATES = 4
-        private const val MAX_DCT_SEARCH_CANDIDATES = 32
+        private const val MAX_FALLBACK_DCT_ENCODING_CANDIDATES = 4
+        private const val MAX_HIDDEN_DCT_ENCODING_CANDIDATES = 4
+        private const val MAX_DCT_SEARCH_CANDIDATES = 150
     }
 }
 
@@ -451,7 +510,7 @@ internal data class DecodedImageMetrics(
     val pHashDistance: Int,
 )
 
-private object VerifiedWebp {
+internal object VerifiedWebp {
     private const val MAX_PIXELS = 16_777_216L
 
     fun read(bytes: ByteArray): BufferedImage? {

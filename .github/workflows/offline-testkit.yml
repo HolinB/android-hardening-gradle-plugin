@@ -33,8 +33,8 @@ jobs:
       - name: Build and verify Offline TestKit locally
         run: |
           ./gradlew --offline --no-daemon --rerun-tasks packageOfflineHardeningTestKit verifyOfflineHardeningTestKit
-          cp build/distributions/hardening-gradle-plugin-1.2.0-offline-testkit.zip "$RUNNER_TEMP/offline-testkit-first.zip"
+          cp build/distributions/hardening-gradle-plugin-1.3.0-offline-testkit.zip "$RUNNER_TEMP/offline-testkit-first.zip"
       - name: Rebuild and compare Offline TestKit locally
         run: |
           ./gradlew --offline --no-daemon --rerun-tasks packageOfflineHardeningTestKit verifyOfflineHardeningTestKit
-          cmp --silent "$RUNNER_TEMP/offline-testkit-first.zip" build/distributions/hardening-gradle-plugin-1.2.0-offline-testkit.zip
+          cmp --silent "$RUNNER_TEMP/offline-testkit-first.zip" build/distributions/hardening-gradle-plugin-1.3.0-offline-testkit.zip

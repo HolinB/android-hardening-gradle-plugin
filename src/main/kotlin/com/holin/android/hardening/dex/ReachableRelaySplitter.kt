@@ -212,7 +212,7 @@ internal class ReachableRelaySplitter {
         const val SHINGLE_WIDTH = 5
         const val BOUNDARY_SUFFIX = "\u0000boundary"
         const val RELAY_ORDER_SUFFIX = "\u0000relay-order"
-        val DOMAIN = "com.holin.android.hardening/1.2.0/reachable-relay/v1\u0000".toByteArray(StandardCharsets.UTF_8)
+        val DOMAIN = "com.holin.android.hardening/1.3.0/reachable-relay/v1\u0000".toByteArray(StandardCharsets.UTF_8)
         val MOVE_RESULT_OPCODES = setOf(
             Opcode.MOVE_RESULT,
             Opcode.MOVE_RESULT_WIDE,

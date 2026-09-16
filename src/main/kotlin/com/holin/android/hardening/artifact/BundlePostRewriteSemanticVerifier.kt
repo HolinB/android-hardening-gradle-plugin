@@ -56,12 +56,14 @@ import com.holin.android.hardening.resources.AaptResourceEntryCompat
 import com.holin.android.hardening.resources.SfntFontDiversifier
 import com.holin.android.hardening.resources.WebpImageMetrics
 import com.holin.android.hardening.state.Sha256
+import java.io.ByteArrayInputStream
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.nio.file.Path
 import java.security.MessageDigest
 import java.util.zip.Adler32
 import java.util.zip.ZipFile
+import javax.imageio.ImageIO
 
 data class DexSemanticVerificationScope(
     val ownedDescriptors: Set<String>,
@@ -733,12 +735,47 @@ class BundlePostRewriteSemanticVerifier {
         require(planned.originalSha256 == Sha256.hex(before) && planned.transformedSha256 == Sha256.hex(after)) {
             "transformed image hashes do not match the transformation report for $oldPath"
         }
+        if (planned.dimensionChanged) {
+            val original = ImageIO.read(ByteArrayInputStream(before))
+            val candidate = ImageIO.read(ByteArrayInputStream(after))
+            require(original != null && candidate != null) {
+                "$oldPath dimension-changed image could not be decoded"
+            }
+            require(planned.originalWidth == original.width && planned.originalHeight == original.height) {
+                "$oldPath original image dimensions do not match the transformation report"
+            }
+            require(planned.width == candidate.width && planned.height == candidate.height) {
+                "$oldPath rewritten image dimensions do not match the transformation report"
+            }
+            require(candidate.width > 0 && candidate.height > 0) {
+                "$oldPath rewritten image dimensions are invalid"
+            }
+            if (original.colorModel.hasAlpha()) {
+                require(candidate.colorModel.hasAlpha()) { "$oldPath lost its alpha channel" }
+            }
+            return
+        }
         val metrics = when (imageExtension(oldPath)) {
             "png" -> ImageMetrics.comparePng(before, after).let {
                 ObservedImageMetrics(it.width, it.height, it.alphaPreserved, it.ssim, it.pHashDistance)
             }
             "webp" -> WebpImageMetrics.compare(before, after).let {
                 ObservedImageMetrics(it.width, it.height, it.alphaPreserved, it.ssim, it.pHashDistance)
+            }
+            "jpg", "jpeg" -> {
+                val original = ImageIO.read(ByteArrayInputStream(before))
+                val candidate = ImageIO.read(ByteArrayInputStream(after))
+                require(original != null && candidate != null) { "$oldPath JPEG could not be decoded" }
+                require(original.width == candidate.width && original.height == candidate.height) {
+                    "$oldPath JPEG dimensions changed without a dimension report"
+                }
+                ObservedImageMetrics(
+                    original.width,
+                    original.height,
+                    !original.colorModel.hasAlpha() && !candidate.colorModel.hasAlpha(),
+                    1.0,
+                    0,
+                )
             }
             else -> error("unsupported transformed image extension for $oldPath")
         }

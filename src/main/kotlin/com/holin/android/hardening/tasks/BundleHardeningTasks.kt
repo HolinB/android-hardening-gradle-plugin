@@ -21,6 +21,7 @@ import com.holin.android.hardening.state.Sha256
 import com.holin.android.hardening.naming.RegistryCodec
 import com.holin.android.hardening.similarity.OwnedArtifactInventoryCodec
 import com.holin.android.hardening.HardeningOwnership
+import com.holin.android.hardening.DependencyMetadataMode
 import java.nio.file.Files
 import org.gradle.api.DefaultTask
 import org.gradle.api.file.DirectoryProperty
@@ -77,6 +78,12 @@ abstract class RewriteHardeningBundleTask : DefaultTask() {
 
     @get:Input
     abstract val minimumImagePHashDistance: Property<Int>
+
+    @get:Input
+    abstract val dependencyMetadata: Property<DependencyMetadataMode>
+
+    @get:Input
+    abstract val structuralMetadataEntryCount: Property<Int>
 
     @get:OutputFile
     abstract val unsignedBundle: RegularFileProperty
@@ -189,6 +196,8 @@ abstract class RewriteHardeningBundleTask : DefaultTask() {
                         ownership.get(),
                         preparedState.identity.fixedSeedSha256 != null,
                         preparedState.identity.fixedSeedSha256,
+                        dependencyMetadata.get(),
+                        structuralMetadataEntryCount.get(),
                     ),
                 )
             }
@@ -211,7 +220,14 @@ abstract class RewriteHardeningBundleTask : DefaultTask() {
             preparedRegistryPath,
             registryCodec.encode(plan.updatedRegistry).toByteArray(Charsets.UTF_8),
         ) {
-            val rewrite = BundleZipRewriter().rewrite(input, output, saltService.get().sha256(), plan.replacements)
+            val rewrite = BundleZipRewriter().rewrite(
+                input,
+                output,
+                saltService.get().sha256(),
+                plan.replacements,
+                plan.removals,
+                plan.additions,
+            )
             require(rewrite.originalAabSha256 == plan.report.sourceAabSha256) {
                 "bundle rewrite source differs from its transformation plan"
             }

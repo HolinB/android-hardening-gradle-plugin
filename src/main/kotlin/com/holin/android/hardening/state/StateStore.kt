@@ -154,8 +154,8 @@ class StateStore internal constructor(
         validateNoSymlinks(request.root)
         val sourceDomain = CanonicalContentDomain.require(expected.fromContentDomain)
         val targetDomain = CanonicalContentDomain.require(expected.toContentDomain)
-        require(targetDomain == CanonicalContentDomain.HOLIN_1_2) {
-            "migration target canonical content domain is not the 1.2.0 domain"
+        require(targetDomain == CanonicalContentDomain.HOLIN_1_3) {
+            "migration target canonical content domain is not the 1.3.0 domain"
         }
         val current = inspectCurrentForMigration(request.root, expected, sourceDomain, targetDomain)
         val identity = current.manifest.identity
@@ -717,7 +717,7 @@ class StateStore internal constructor(
 
     private fun inspectCurrent(
         root: Path,
-        domain: CanonicalContentDomain = CanonicalContentDomain.HOLIN_1_2,
+        domain: CanonicalContentDomain = CanonicalContentDomain.HOLIN_1_3,
     ): CurrentSnapshot {
         val current = root.resolve("current")
         require(Files.isDirectory(current, LinkOption.NOFOLLOW_LINKS)) { "current is not a directory" }
@@ -773,10 +773,10 @@ class StateStore internal constructor(
     private fun inspectSnapshot(
         pointer: ActivePointer,
         snapshot: Path,
-        domain: CanonicalContentDomain = CanonicalContentDomain.HOLIN_1_2,
+        domain: CanonicalContentDomain = CanonicalContentDomain.HOLIN_1_3,
     ): CurrentSnapshot {
         val contents = inspectSnapshotContents(snapshot)
-        val payloadSha256 = if (domain == CanonicalContentDomain.HOLIN_1_2) {
+        val payloadSha256 = if (domain == CanonicalContentDomain.HOLIN_1_3) {
             canonicalPayloadHash(snapshot)
         } else {
             Sha256.canonicalNode(snapshot, domain)

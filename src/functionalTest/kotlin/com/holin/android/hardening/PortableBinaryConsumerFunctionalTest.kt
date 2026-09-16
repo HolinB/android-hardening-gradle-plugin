@@ -517,9 +517,9 @@ class PortableBinaryConsumerFunctionalTest {
         mobile.resolve("build.gradle").writeText(
             """
             plugins {
-                ${if (hardeningBeforeAndroid) "id 'com.holin.android.hardening' version '1.2.0'" else "id 'com.android.application'"}
+                ${if (hardeningBeforeAndroid) "id 'com.holin.android.hardening' version '1.3.0'" else "id 'com.android.application'"}
                 ${if (hardeningBeforeAndroid) "id 'com.android.application'" else "id 'org.jetbrains.kotlin.android'"}
-                ${if (hardeningBeforeAndroid) "id 'org.jetbrains.kotlin.android'" else "id 'com.holin.android.hardening' version '1.2.0'"}
+                ${if (hardeningBeforeAndroid) "id 'org.jetbrains.kotlin.android'" else "id 'com.holin.android.hardening' version '1.3.0'"}
                 ${if (neutralLegacyJarSha256 != null) "id '$NEUTRAL_LEGACY_PLUGIN_ID'" else ""}
             }
             dependencies {

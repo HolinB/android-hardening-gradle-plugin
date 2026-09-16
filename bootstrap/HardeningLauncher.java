@@ -30,15 +30,15 @@ import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
 
 public final class HardeningLauncher {
-    private static final String VERSION = "1.2.0";
-    private static final String ARCHIVE_NAME = "hardening-gradle-plugin-1.2.0-portable-maven.zip";
+    private static final String VERSION = "1.3.0";
+    private static final String ARCHIVE_NAME = "hardening-gradle-plugin-1.3.0-portable-maven.zip";
     private static final String RELEASE_URL =
-        "https://github.com/HolinB/android-hardening-gradle-plugin/releases/download/v1.2.0/" + ARCHIVE_NAME;
+        "https://github.com/HolinB/android-hardening-gradle-plugin/releases/download/v1.3.0/" + ARCHIVE_NAME;
     private static final String RELEASE_SHA256 =
-        "60805aa517119940a7f0458249827c1cbbbcea4eab7bc01d8d7ebd5b90eb20cf";
+        "7f525e886b989eda3951dd3e3e935bc57c3df37e1fd3899caf94b9ed2d7356f3";
     private static final String MARKER =
-        "repository/com/holin/android/hardening/hardening-gradle-plugin/1.2.0/" +
-            "hardening-gradle-plugin-1.2.0.jar";
+        "repository/com/holin/android/hardening/hardening-gradle-plugin/1.3.0/" +
+            "hardening-gradle-plugin-1.3.0.jar";
     private static final Pattern WRAPPER_VERSION =
         Pattern.compile("(?:^|/)gradle-([0-9]+(?:\\.[0-9]+){1,2})-(?:bin|all)\\.zip(?:$|[?#])");
     private static final Pattern CHECKSUM_LINE = Pattern.compile("([0-9a-f]{64})  (.+)");
@@ -188,8 +188,10 @@ public final class HardeningLauncher {
             HttpResponse<Path> response = client.send(request, HttpResponse.BodyHandlers.ofFile(temporary));
             if (response.statusCode() < 200 || response.statusCode() >= 300) return DownloadResult.none();
             String actual = sha256(temporary);
-            require(actual.equals(expectedChecksum),
-                "portable Release checksum mismatch: expected=" + expectedChecksum + ", actual=" + actual);
+            if (!actual.equals(expectedChecksum)) {
+                throw new LauncherFailure(
+                    "portable Release checksum mismatch: expected=" + expectedChecksum + ", actual=" + actual);
+            }
             retainTemporary = true;
             return new DownloadResult(temporary, false);
         } catch (IllegalArgumentException | IOException failure) {

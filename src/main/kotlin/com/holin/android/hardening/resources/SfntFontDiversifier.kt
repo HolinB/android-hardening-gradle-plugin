@@ -214,7 +214,7 @@ class SfntFontDiversifier {
         const val FONT_CHECKSUM_MAGIC = 0xb1b0afbaL
         const val UINT32_MASK = 0xffffffffL
         val SUPPORTED_SCALER_TYPES = setOf(0x00010000, 0x4f54544f, 0x74727565, 0x74797031)
-        val MARKER_MAGIC = "HA12".toByteArray(Charsets.US_ASCII)
-        val MARKER_DOMAIN = "com.holin.android.hardening/1.2.0/sfnt/v1".toByteArray(Charsets.US_ASCII)
+        val MARKER_MAGIC = "HA13".toByteArray(Charsets.US_ASCII)
+        val MARKER_DOMAIN = "com.holin.android.hardening/1.3.0/sfnt/v1".toByteArray(Charsets.US_ASCII)
     }
 }

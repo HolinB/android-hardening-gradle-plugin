@@ -64,6 +64,45 @@ class OwnedSimilarityConfigurationIdentityTest {
     }
 
     @Test
+    fun `image ownership scope changes baseline configuration identity`() {
+        fun configured(include: String, exclude: String, format: ImageFormat): AndroidHardeningExtension = extension().also {
+            it.ownership.module(":app") {
+                sourceSets.add("main")
+                images {
+                    include(include)
+                    exclude(exclude)
+                    format(format)
+                }
+            }
+        }
+
+        val original = configured(
+            "src/main/res/drawable/*.png",
+            "src/main/res/drawable/private/**",
+            ImageFormat.PNG,
+        )
+        val changedInclude = configured(
+            "src/main/res/drawable/icons/*.png",
+            "src/main/res/drawable/private/**",
+            ImageFormat.PNG,
+        )
+        val changedExclude = configured(
+            "src/main/res/drawable/*.png",
+            "src/main/res/drawable/generated/**",
+            ImageFormat.PNG,
+        )
+        val changedFormat = configured(
+            "src/main/res/drawable/*.png",
+            "src/main/res/drawable/private/**",
+            ImageFormat.JPEG,
+        )
+
+        assertNotEquals(canonicalIdentity(original), canonicalIdentity(changedInclude))
+        assertNotEquals(canonicalIdentity(original), canonicalIdentity(changedExclude))
+        assertNotEquals(canonicalIdentity(original), canonicalIdentity(changedFormat))
+    }
+
+    @Test
     fun `version name and signing certificate each change baseline configuration identity`() {
         val extension = extension()
         val original = identity(extension)

@@ -17,6 +17,7 @@ import com.android.tools.smali.dexlib2.writer.pool.DexPool
 import com.holin.android.hardening.testHardeningOwnership
 import com.holin.android.hardening.HardcodedReferenceKind
 import com.holin.android.hardening.HardeningOwnership
+import com.holin.android.hardening.ImageFormat
 import com.holin.android.hardening.naming.PseudowordRegistry
 import com.holin.android.hardening.naming.AliasRequest
 import com.holin.android.hardening.naming.RegistryKey
@@ -34,6 +35,9 @@ import java.util.zip.Adler32
 import java.util.zip.ZipEntry
 import java.util.zip.ZipFile
 import java.util.zip.ZipOutputStream
+import java.awt.image.BufferedImage
+import java.io.ByteArrayOutputStream
+import javax.imageio.ImageIO
 import kotlin.io.path.createDirectories
 import kotlin.io.path.writeBytes
 import kotlin.io.path.writeText
@@ -602,6 +606,43 @@ class HardenedBundlePlannerTest {
     }
 
     @Test
+    fun `planner does not resize notification jpeg when image scope is enabled`() {
+        fixtureRepository()
+        Files.delete(repository.resolve("app/src/main/res/drawable/icon_notification.png"))
+        val jpeg = encodedImage(2, 2, "jpeg")
+        repository.resolve("app/src/main/res/drawable/icon_notification.jpg").writeBytes(jpeg)
+        val ordinary = repository.resolve("notification-jpeg-ordinary.aab")
+        zip(
+            ordinary,
+            mapOf(
+                "base/dex/classes.dex" to dex(OWNED_DESCRIPTOR),
+                "base/resources.pb" to resourcesTable("jpg"),
+                "base/res/layout/home.xml" to compiledXml(),
+                "base/res/drawable/icon_notification.jpg" to jpeg,
+            ),
+        )
+        val seed = ByteArray(32) { 27 }
+        val plan = HardenedBundlePlanner().plan(
+            request(
+                ordinary,
+                seed,
+                PseudowordRegistry(seed).snapshot(1),
+                notificationJpegOwnership(),
+                null,
+                0.0,
+            ),
+        )
+
+        val image = plan.report.resources.images.single()
+        assertEquals(ImageTransformStatus.INELIGIBLE, image.status)
+        assertEquals(ImageIneligibilityReason.UNSUPPORTED_FORMAT, image.reason)
+        assertFalse(image.dimensionChanged)
+        assertEquals(null, image.transformedSha256)
+        val replacement = plan.replacements.single { it.oldPath == "base/res/drawable/icon_notification.jpg" }
+        assertTrue(replacement.bytes.contentEquals(jpeg))
+    }
+
+    @Test
     fun `fails closed when the exact owned dex inventory produces no effective transform`() {
         fixtureRepository()
         val ordinary = repository.resolve("ordinary.aab")
@@ -699,6 +740,34 @@ class HardenedBundlePlannerTest {
         assertFailsWith<IllegalArgumentException> {
             HardenedBundlePlanReportCodec.decode(encoded.replaceFirst("\"schemaVersion\":1", "\"schemaVersion\":2"))
         }
+    }
+
+    @Test
+    fun `schema one report without 1 3 image fields remains readable`() {
+        fixtureRepository()
+        val ordinary = repository.resolve("ordinary.aab")
+        zip(
+            ordinary,
+            mapOf(
+                "base/dex/classes.dex" to dex(OWNED_DESCRIPTOR),
+                "base/resources.pb" to resourcesTable(),
+                "base/res/layout/home.xml" to compiledXml(),
+                "base/res/drawable/icon_notification.png" to byteArrayOf(2),
+            ),
+        )
+        val seed = ByteArray(32) { 21 }
+        val report = HardenedBundlePlanner().plan(
+            request(ordinary, seed, PseudowordRegistry(seed).snapshot(1)),
+        ).report
+        val encoded = HardenedBundlePlanReportCodec.encode(report)
+            .replace("\"transformedJpegCount\":0,", "")
+            .replace(",\"originalWidth\":null,\"originalHeight\":null,\"dimensionChanged\":false,\"resizeFallback\":false,\"resizeFallbackReason\":null", "")
+
+        val decoded = HardenedBundlePlanReportCodec.decode(encoded)
+
+        assertEquals(report.resources.transformedJpegCount, decoded.resources.transformedJpegCount)
+        assertEquals(report.resources.images.map { it.oldPath }, decoded.resources.images.map { it.oldPath })
+        assertTrue(decoded.resources.images.all { !it.dimensionChanged && !it.resizeFallback })
     }
 
     @Test
@@ -1099,6 +1168,7 @@ class HardenedBundlePlannerTest {
         registry: com.holin.android.hardening.naming.RegistrySnapshot,
         ownership: HardeningOwnership = testHardeningOwnership(repository, OWNED_MODULES),
         fixedSeedHash: String? = null,
+        minimumImageCoverage: Double = 0.90,
     ) =
         HardenedBundlePlanRequest(
             ordinary,
@@ -1115,7 +1185,7 @@ class HardenedBundlePlannerTest {
             4,
             1.0,
             true,
-            0.90,
+            minimumImageCoverage,
             0.995,
             11,
             ":app",
@@ -1139,6 +1209,43 @@ class HardenedBundlePlannerTest {
             it.writeBytes(byteArrayOf(1, 2, 3))
         }
     }
+
+    private fun notificationJpegOwnership(): HardeningOwnership {
+        val app = repository.resolve("app")
+        val sourceSet = HardeningOwnership.ResolvedSourceSetRoots(
+            "main",
+            setOf(app.resolve("src/main/java")),
+            setOf(app.resolve("src/main/kotlin")),
+            setOf(app.resolve("src/main/res")),
+            setOf(app.resolve("src/main/AndroidManifest.xml")),
+        )
+        val roots = HardeningOwnership.ResolvedSourceRoots.fromSourceSets(listOf(sourceSet))
+        val images = HardeningOwnership.ImageScope.resolve(
+            setOf("src/main/res/drawable/icon_notification.jpg"),
+            emptySet(),
+            setOf(ImageFormat.JPEG),
+        )
+        return HardeningOwnership(
+            listOf(
+                HardeningOwnership.OwnedModule(
+                    ":app",
+                    app,
+                    setOf("main"),
+                    roots,
+                    HardeningOwnership.WebpScope.none(),
+                    images,
+                ),
+            ),
+            setOf("com.example.junkcode"),
+            emptySet(),
+        )
+    }
+
+    private fun encodedImage(width: Int, height: Int, format: String): ByteArray =
+        ByteArrayOutputStream().use { output ->
+            check(ImageIO.write(BufferedImage(width, height, BufferedImage.TYPE_INT_RGB), format, output))
+            output.toByteArray()
+        }
 
     private fun secondOwnedSource() {
         repository.resolve("app/src/main/java/com/example/demo/match/Second.kt").also {
@@ -1175,7 +1282,7 @@ class HardenedBundlePlannerTest {
         },
     )
 
-    private fun resourcesTable(): ByteArray {
+    private fun resourcesTable(notificationExtension: String = "png"): ByteArray {
         fun file(path: String) = Resources.ConfigValue.newBuilder().setValue(
             Resources.Value.newBuilder().setItem(
                 Resources.Item.newBuilder().setFile(Resources.FileReference.newBuilder().setPath(path)),
@@ -1203,7 +1310,7 @@ class HardenedBundlePlannerTest {
                             Resources.Entry.newBuilder()
                                 .setEntryId(Resources.EntryId.newBuilder().setId(1))
                                 .setName("icon_notification")
-                                .addConfigValue(file("res/drawable/icon_notification.png")),
+                                .addConfigValue(file("res/drawable/icon_notification.$notificationExtension")),
                         ),
                 ),
         ).build().toByteArray()

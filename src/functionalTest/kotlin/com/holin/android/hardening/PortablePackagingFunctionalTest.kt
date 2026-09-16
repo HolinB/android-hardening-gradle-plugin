@@ -48,7 +48,7 @@ class PortablePackagingFunctionalTest {
             ),
             "legacy marker reached staging",
         )
-        val archive = buildLogic.resolve("build/distributions/hardening-gradle-plugin-1.2.0-portable-maven.zip")
+        val archive = buildLogic.resolve("build/distributions/hardening-gradle-plugin-1.3.0-portable-maven.zip")
         ZipFile(archive.toFile()).use { zip ->
             assertFalse(
                 zip.entries().asSequence().any { entry -> entry.name.contains("com/legacy/vendor/android/hardening") },

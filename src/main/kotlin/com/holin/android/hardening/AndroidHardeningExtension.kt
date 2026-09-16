@@ -31,6 +31,7 @@ open class AndroidHardeningExtension @Inject constructor(
     val naming: NamingSpec = objects.newInstance(NamingSpec::class.java, objects)
     val code: CodeSpec = objects.newInstance(CodeSpec::class.java, objects)
     val resources: ResourcesSpec = objects.newInstance(ResourcesSpec::class.java, objects)
+    val bundle: BundleSpec = objects.newInstance(BundleSpec::class.java, objects)
     val contracts: ContractsSpec = objects.newInstance(ContractsSpec::class.java, objects)
     val signing: SigningSpec = objects.newInstance(SigningSpec::class.java, objects)
     val benchmark: BenchmarkSpec = objects.newInstance(BenchmarkSpec::class.java, objects)
@@ -47,6 +48,7 @@ open class AndroidHardeningExtension @Inject constructor(
     fun naming(action: Action<in NamingSpec>) = action.execute(naming)
     fun code(action: Action<in CodeSpec>) = action.execute(code)
     fun resources(action: Action<in ResourcesSpec>) = action.execute(resources)
+    fun bundle(action: Action<in BundleSpec>) = action.execute(bundle)
     fun contracts(action: Action<in ContractsSpec>) = action.execute(contracts)
     fun signing(action: Action<in SigningSpec>) = action.execute(signing)
     fun benchmark(action: Action<in BenchmarkSpec>) = action.execute(benchmark)
@@ -72,6 +74,9 @@ open class AndroidHardeningExtension @Inject constructor(
             "resources.bitmapDiversification.minimumPHashDistance must be in 11..64"
         }
         requireFraction("resources.bitmapDiversification.minimumSsim", resources.bitmapDiversification.minimumSsim.get())
+        require(bundle.structuralMetadataEntryCount.get() in 0..64) {
+            "bundle.structuralMetadataEntryCount must be in 0..64"
+        }
         require(similarity.maximumOverallExclusive.get() in 0.0..100.0) {
             "similarity.maximumOverallExclusive must be in 0.0..100.0"
         }
@@ -239,6 +244,15 @@ open class BitmapDiversificationSpec @Inject constructor(objects: ObjectFactory)
     val minimumCoverage: Property<Double> = objects.property(Double::class.java).convention(0.90)
     val minimumPHashDistance: Property<Int> = objects.property(Int::class.java).convention(11)
     val minimumSsim: Property<Double> = objects.property(Double::class.java).convention(0.995)
+}
+
+open class BundleSpec @Inject constructor(objects: ObjectFactory) {
+    val dependencyMetadata: Property<DependencyMetadataMode> =
+        objects.property(DependencyMetadataMode::class.java).convention(DependencyMetadataMode.PRESERVE)
+    val structuralMetadataEntryCount: Property<Int> = objects.property(Int::class.java).convention(0)
+
+    val PRESERVE: DependencyMetadataMode get() = DependencyMetadataMode.PRESERVE
+    val OMIT: DependencyMetadataMode get() = DependencyMetadataMode.OMIT
 }
 
 open class ContractsSpec @Inject constructor(objects: ObjectFactory) {

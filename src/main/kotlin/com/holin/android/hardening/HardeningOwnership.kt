@@ -133,7 +133,10 @@ class HardeningOwnership internal constructor(
     }
 
     fun isWebpIncluded(module: String, moduleRelativePath: String): Boolean =
-        modules.firstOrNull { it.path == module }?.webp?.includes(moduleRelativePath) == true
+        modules.firstOrNull { it.path == module }?.images?.includes(moduleRelativePath, ImageFormat.WEBP) == true
+
+    fun isImageIncluded(module: String, moduleRelativePath: String, format: ImageFormat): Boolean =
+        modules.firstOrNull { it.path == module }?.images?.includes(moduleRelativePath, format) == true
 
     fun requireMatchedWebpIncludes(candidates: Map<String, Set<String>>) {
         modules.forEach { module ->
@@ -141,6 +144,18 @@ class HardeningOwnership internal constructor(
             module.webp.includes.forEach { pattern ->
                 require(paths.any { module.webp.matchesInclude(pattern, it) }) {
                     "ownership module ${module.path} WebP include matched no owned WebP: $pattern"
+                }
+            }
+        }
+    }
+
+    fun requireMatchedImageIncludes(candidates: Map<String, Set<String>>) {
+        modules.forEach { module ->
+            val paths = candidates[module.path].orEmpty()
+            module.images.includes.forEach { pattern ->
+                require(paths.any { module.images.matchesInclude(pattern, it) &&
+                    module.images.formats.any { format -> imageFormatForPath(it) == format } }) {
+                    "ownership module ${module.path} image include matched no owned image: $pattern"
                 }
             }
         }
@@ -165,13 +180,15 @@ class HardeningOwnership internal constructor(
         sourceSets: Set<String>,
         sourceRoots: ResolvedSourceRoots = ResolvedSourceRoots.conventional(directory, sourceSets),
         webp: WebpScope = WebpScope.none(),
+        images: ImageScope = ImageScope.none(),
     ) {
         val directory: Path = directory.toAbsolutePath().normalize()
         val sourceSets: Set<String> = immutableSet(sourceSets)
         val sourceRoots: ResolvedSourceRoots = sourceRoots.snapshot()
         val webp: WebpScope = webp.snapshot()
+        val images: ImageScope = ImageScope.merge(images, this.webp)
 
-        internal fun snapshot(): OwnedModule = OwnedModule(path, directory, sourceSets, sourceRoots, webp)
+        internal fun snapshot(): OwnedModule = OwnedModule(path, directory, sourceSets, sourceRoots, webp, images)
     }
 
     class ResolvedSourceRoots(
@@ -352,6 +369,111 @@ class HardeningOwnership internal constructor(
         }
     }
 
+    class ImageScope private constructor(
+        includes: Collection<String>,
+        excludes: Collection<String>,
+        formats: Collection<ImageFormat>,
+        private val legacyWebpIncludes: Set<String> = emptySet(),
+        private val legacyWebpExcludes: Set<String> = emptySet(),
+    ) {
+        val includes: Set<String> = immutableSet(includes)
+        val excludes: Set<String> = immutableSet(excludes)
+        val formats: Set<ImageFormat> = immutableSet(formats)
+        private val includeMatchers = this.includes.associateWith(::globRegex)
+        private val excludeMatchers = this.excludes.associateWith(::globRegex)
+        private val legacyWebpIncludeMatchers = legacyWebpIncludes.associateWith(::globRegex)
+        private val legacyWebpExcludeMatchers = legacyWebpExcludes.associateWith(::globRegex)
+
+        fun includes(moduleRelativePath: String, format: ImageFormat): Boolean {
+            val normalized = normalizeCandidate(moduleRelativePath)
+            val explicitlyIncluded = includeMatchers.values.any { it.matches(normalized) } ||
+                (format == ImageFormat.WEBP && legacyWebpIncludeMatchers.values.any { it.matches(normalized) })
+            val excluded = excludeMatchers.values.any { it.matches(normalized) } ||
+                (format == ImageFormat.WEBP && legacyWebpExcludeMatchers.values.any { it.matches(normalized) })
+            val formatEnabled = format in formats ||
+                (format == ImageFormat.WEBP && legacyWebpIncludes.isNotEmpty())
+            return formatEnabled && explicitlyIncluded && !excluded
+        }
+
+        internal fun matchesInclude(pattern: String, moduleRelativePath: String): Boolean =
+            requireNotNull(includeMatchers[pattern]).matches(normalizeCandidate(moduleRelativePath)) &&
+                excludeMatchers.values.none { it.matches(normalizeCandidate(moduleRelativePath)) }
+
+        internal fun snapshot(): ImageScope = ImageScope(includes, excludes, formats, legacyWebpIncludes, legacyWebpExcludes)
+
+        companion object {
+            fun resolve(
+                includes: Collection<String>,
+                excludes: Collection<String>,
+                formats: Collection<ImageFormat>,
+            ): ImageScope = ImageScope(
+                normalizePatterns(includes, "include"),
+                normalizePatterns(excludes, "exclude"),
+                formats.toSet(),
+            )
+
+            internal fun none(): ImageScope = ImageScope(emptySet(), emptySet(), emptySet())
+
+            internal fun merge(images: ImageScope, webp: WebpScope): ImageScope = ImageScope(
+                images.includes,
+                images.excludes,
+                images.formats,
+                webp.includes,
+                webp.excludes,
+            )
+
+            private fun normalizePatterns(patterns: Collection<String>, kind: String): List<String> {
+                val normalized = patterns.map(::normalizePattern)
+                require(normalized.distinct().size == normalized.size) {
+                    "ownership contains duplicate image $kind pattern after normalization"
+                }
+                return normalized
+            }
+
+            private fun normalizePattern(pattern: String): String {
+                require(pattern.isNotBlank()) { "Image patterns must not be blank" }
+                require('\\' !in pattern) { "Image patterns must use '/' separators: $pattern" }
+                val trimmed = pattern.trim()
+                require(!trimmed.startsWith('/') && !WINDOWS_ABSOLUTE.matches(trimmed)) {
+                    "Image patterns must be module-relative: $pattern"
+                }
+                val components = trimmed.split('/').filterNot { it.isEmpty() || it == "." }
+                require(components.isNotEmpty() && ".." !in components) {
+                    "Image patterns must not escape the module: $pattern"
+                }
+                return components.joinToString("/")
+            }
+
+            private fun normalizeCandidate(path: String): String {
+                require(path.isNotBlank() && '\\' !in path && !path.startsWith('/') && !WINDOWS_ABSOLUTE.matches(path)) {
+                    "Image candidate path must be module-relative: $path"
+                }
+                val components = path.split('/').filterNot { it.isEmpty() || it == "." }
+                require(components.isNotEmpty() && ".." !in components) {
+                    "Image candidate path must not escape the module: $path"
+                }
+                return components.joinToString("/")
+            }
+
+            private fun globRegex(pattern: String): Regex {
+                val regex = StringBuilder("^")
+                var index = 0
+                while (index < pattern.length) {
+                    when {
+                        pattern.startsWith("**/", index) -> { regex.append("(?:.*/)?"); index += 3 }
+                        pattern.startsWith("**", index) -> { regex.append(".*"); index += 2 }
+                        pattern[index] == '*' -> { regex.append("[^/]*"); index++ }
+                        pattern[index] == '?' -> { regex.append("[^/]"); index++ }
+                        else -> { regex.append(Regex.escape(pattern[index].toString())); index++ }
+                    }
+                }
+                return Regex(regex.append('$').toString())
+            }
+
+            private val WINDOWS_ABSOLUTE = Regex("^[A-Za-z]:/.*")
+        }
+    }
+
     class HardcodedReferenceScope private constructor(
         kinds: Collection<HardcodedReferenceKind>,
         includeGlobs: Collection<String>,
@@ -475,6 +597,12 @@ class HardeningOwnership internal constructor(
     }
 
     companion object {
+        private fun imageFormatForPath(path: String): ImageFormat? = when {
+            path.endsWith(".png", true) -> ImageFormat.PNG
+            path.endsWith(".webp", true) -> ImageFormat.WEBP
+            path.endsWith(".jpg", true) || path.endsWith(".jpeg", true) -> ImageFormat.JPEG
+            else -> null
+        }
         internal fun resolve(
             rootProject: Project,
             declarations: Map<String, Set<String>>,
@@ -485,6 +613,9 @@ class HardeningOwnership internal constructor(
             excludedPackagePrefixes: Set<String>,
             hardcodedReferences: HardcodedReferenceScope = HardcodedReferenceScope.defaults(),
             requireAndroidModule: Boolean = true,
+            imageIncludes: Map<String, Collection<String>> = emptyMap(),
+            imageExcludes: Map<String, Collection<String>> = emptyMap(),
+            imageFormats: Map<String, Collection<ImageFormat>> = emptyMap(),
         ): HardeningOwnership = resolveDeclarations(
             rootProject,
             declarations,
@@ -495,6 +626,9 @@ class HardeningOwnership internal constructor(
             excludedPackagePrefixes,
             requireAndroidModule,
             hardcodedReferences,
+            imageIncludes,
+            imageExcludes,
+            imageFormats,
         )
 
         internal fun resolve(
@@ -512,6 +646,9 @@ class HardeningOwnership internal constructor(
             excludedPackagePrefixes,
             false,
             HardcodedReferenceScope.defaults(),
+            emptyMap(),
+            emptyMap(),
+            emptyMap(),
         )
 
         private fun resolveDeclarations(
@@ -524,6 +661,9 @@ class HardeningOwnership internal constructor(
             excludedPackagePrefixes: Set<String>,
             requireAndroidModule: Boolean,
             hardcodedReferences: HardcodedReferenceScope,
+            imageIncludes: Map<String, Collection<String>>,
+            imageExcludes: Map<String, Collection<String>>,
+            imageFormats: Map<String, Collection<ImageFormat>>,
         ): HardeningOwnership {
             require(declarations.isNotEmpty()) { "androidHardening.ownership must declare at least one module" }
             val generated = validatePrefixes(generatedPackagePrefixes, "generatedPackagePrefixes")
@@ -571,6 +711,11 @@ class HardeningOwnership internal constructor(
                     validatedSourceSets,
                     roots,
                     WebpScope.resolve(webpIncludes[path].orEmpty(), webpExcludes[path].orEmpty()),
+                    ImageScope.resolve(
+                        imageIncludes[path].orEmpty(),
+                        imageExcludes[path].orEmpty(),
+                        imageFormats[path].orEmpty(),
+                    ),
                 )
             }
             require(modules.map(OwnedModule::path).distinct().size == modules.size) {
@@ -703,6 +848,9 @@ open class OwnershipSpec @Inject constructor(private val objects: ObjectFactory)
     private val stringSetType = Set::class.java as Class<Set<String>>
     private val moduleWebpIncludes = linkedMapOf<String, List<String>>()
     private val moduleWebpExcludes = linkedMapOf<String, List<String>>()
+    private val moduleImageIncludes = linkedMapOf<String, List<String>>()
+    private val moduleImageExcludes = linkedMapOf<String, List<String>>()
+    private val moduleImageFormats = linkedMapOf<String, Set<ImageFormat>>()
     private val moduleManifestFiles = linkedMapOf<String, ConfigurableFileCollection>()
 
     val modules: MapProperty<String, Set<String>> = objects.mapProperty(String::class.java, stringSetType)
@@ -713,6 +861,10 @@ open class OwnershipSpec @Inject constructor(private val objects: ObjectFactory)
 
     fun hardcodedReferences(action: Action<in HardcodedReferenceSpec>) = action.execute(hardcodedReferences)
 
+    internal fun declaredImageIncludes(): Map<String, List<String>> = moduleImageIncludes.toMap()
+    internal fun declaredImageExcludes(): Map<String, List<String>> = moduleImageExcludes.toMap()
+    internal fun declaredImageFormats(): Map<String, Set<ImageFormat>> = moduleImageFormats.toMap()
+
     fun module(path: String, action: Action<in OwnershipModuleSpec>) {
         val current = LinkedHashMap(modules.orNull.orEmpty())
         require(path !in current) { "ownership contains duplicate module declaration: $path" }
@@ -721,6 +873,9 @@ open class OwnershipSpec @Inject constructor(private val objects: ObjectFactory)
         current[path] = LinkedHashSet(spec.sourceSets.get())
         moduleWebpIncludes[path] = spec.webp.includes.get()
         moduleWebpExcludes[path] = spec.webp.excludes.get()
+        moduleImageIncludes[path] = spec.images.includes.get()
+        moduleImageExcludes[path] = spec.images.excludes.get()
+        moduleImageFormats[path] = spec.images.formats.get()
         moduleManifestFiles[path] = spec.manifestFiles
         modules.set(current)
     }
@@ -741,6 +896,9 @@ open class OwnershipSpec @Inject constructor(private val objects: ObjectFactory)
         LinkedHashSet(excludedPackagePrefixes.get()),
         hardcodedReferences.resolve(),
         requireAndroidModule,
+        moduleImageIncludes,
+        moduleImageExcludes,
+        moduleImageFormats,
     )
 }
 
@@ -780,8 +938,10 @@ open class OwnershipModuleSpec @Inject constructor(objects: ObjectFactory) {
     val sourceSets: SetProperty<String> = objects.setProperty(String::class.java).convention(emptySet())
     val manifestFiles: ConfigurableFileCollection = objects.fileCollection()
     val webp: WebpScopeSpec = objects.newInstance(WebpScopeSpec::class.java, objects)
+    val images: ImageScopeSpec = objects.newInstance(ImageScopeSpec::class.java, objects)
 
     fun webp(action: Action<in WebpScopeSpec>) = action.execute(webp)
+    fun images(action: Action<in ImageScopeSpec>) = action.execute(images)
 }
 
 open class WebpScopeSpec @Inject constructor(objects: ObjectFactory) {
@@ -795,4 +955,30 @@ open class WebpScopeSpec @Inject constructor(objects: ObjectFactory) {
     fun exclude(pattern: String) {
         excludes.add(pattern)
     }
+}
+
+open class ImageScopeSpec @Inject constructor(objects: ObjectFactory) {
+    val includes: ListProperty<String> = objects.listProperty(String::class.java).convention(emptyList())
+    val excludes: ListProperty<String> = objects.listProperty(String::class.java).convention(emptyList())
+    val formats: SetProperty<ImageFormat> = objects.setProperty(ImageFormat::class.java).convention(emptySet())
+
+    fun include(pattern: String) {
+        includes.add(pattern)
+    }
+
+    fun exclude(pattern: String) {
+        excludes.add(pattern)
+    }
+
+    fun format(format: ImageFormat) {
+        formats.add(format)
+    }
+
+    fun formats(vararg values: ImageFormat) {
+        formats.addAll(values.asList())
+    }
+
+    val PNG: ImageFormat get() = ImageFormat.PNG
+    val WEBP: ImageFormat get() = ImageFormat.WEBP
+    val JPEG: ImageFormat get() = ImageFormat.JPEG
 }

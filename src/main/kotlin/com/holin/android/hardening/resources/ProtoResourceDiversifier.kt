@@ -130,7 +130,7 @@ class ProtoResourceDiversifier {
     }
 
     private companion object {
-        const val RESOURCE_TABLE_DOMAIN = "com.holin.android.hardening/1.2.0/aapt2-resource-table/v1"
-        const val XML_DOMAIN = "com.holin.android.hardening/1.2.0/aapt2-xml-node/v1"
+        const val RESOURCE_TABLE_DOMAIN = "com.holin.android.hardening/1.3.0/aapt2-resource-table/v1"
+        const val XML_DOMAIN = "com.holin.android.hardening/1.3.0/aapt2-xml-node/v1"
     }
 }

@@ -87,8 +87,8 @@ class OfflineMatrixBuildSupportTest {
         zip(
             portableArchive,
             mapOf(
-                "repository/com/holin/android/hardening/hardening-gradle-plugin/1.2.0/" +
-                    "hardening-gradle-plugin-1.2.0.jar" to "portable-plugin",
+                "repository/com/holin/android/hardening/hardening-gradle-plugin/1.3.0/" +
+                    "hardening-gradle-plugin-1.3.0.jar" to "portable-plugin",
             ),
         )
         val gradleHome = temporary.resolve("gradle-8.13")
@@ -129,13 +129,13 @@ class OfflineMatrixBuildSupportTest {
         val staging = temporary.resolve("staging")
         val extraction = temporary.resolve("portable-extracted")
 
-        OfflineMatrixAssembler.assemble(staging, extraction, portableArchive, "1.2.0", listOf(row))
+        OfflineMatrixAssembler.assemble(staging, extraction, portableArchive, "1.3.0", listOf(row))
 
         assertTrue(Files.mismatch(portableArchive, staging.resolve("portable/portable.zip")) == -1L)
         assertTrue(Files.isRegularFile(staging.resolve("fixture-templates/settings.gradle.template")))
         assertContains(
             Files.readString(staging.resolve("fixture-templates/build.gradle.template")),
-            "id 'com.holin.android.hardening' version '1.2.0' apply false",
+                "id 'com.holin.android.hardening' version '1.3.0' apply false",
         )
         assertTrue(
             Files.isRegularFile(
@@ -165,7 +165,7 @@ class OfflineMatrixBuildSupportTest {
         )
         assertContains(
             Files.readString(staging.resolve("matrix/agp-8.13.2/verification-metadata.xml")),
-            "name=\"hardening-gradle-plugin\" version=\"1.2.0\"",
+                "name=\"hardening-gradle-plugin\" version=\"1.3.0\"",
         )
         assertContains(
             Files.readString(staging.resolve("matrix/agp-8.13.2/THIRD_PARTY_LICENSES.txt")),
@@ -192,7 +192,7 @@ class OfflineMatrixBuildSupportTest {
                 temporary.resolve("duplicate-staging"),
                 temporary.resolve("duplicate-extraction"),
                 portableArchive,
-                "1.2.0",
+                "1.3.0",
                 emptyList(),
             )
         }
@@ -209,7 +209,7 @@ class OfflineMatrixBuildSupportTest {
                     temporary.resolve("traversal-staging-$index"),
                     temporary.resolve("traversal-extraction-$index"),
                     portableArchive,
-                    "1.2.0",
+                    "1.3.0",
                     emptyList(),
                 )
             }

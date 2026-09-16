@@ -8,6 +8,7 @@ enum class ResourceEntryTransformAction {
 enum class ResourceExclusionReason {
     UNOWNED_MODULE,
     OUTSIDE_CONFIGURED_WEBP_SCOPE,
+    OUTSIDE_CONFIGURED_IMAGE_SCOPE,
     DEPENDENCY,
     GENERATED,
     EXTERNALLY_NAMED,
@@ -50,6 +51,13 @@ data class ImageResourceReport(
     val status: ImageTransformStatus,
     val reason: ImageIneligibilityReason,
     val metrics: PngComparisonMetrics?,
+    val originalWidth: Int? = null,
+    val originalHeight: Int? = null,
+    val newWidth: Int? = null,
+    val newHeight: Int? = null,
+    val dimensionChanged: Boolean = false,
+    val resizeFallback: Boolean = false,
+    val resizeFallbackReason: String? = null,
 )
 
 data class OwnedResourceTransformReport(
@@ -79,6 +87,7 @@ class OwnedResourceTransformer(
 ) {
     private val seed = lineageSeed.copyOf()
     private val pngDiversifier = PngDiversifier(minimumSsim, minimumPHashDistance)
+    private val dimensionResizer = ImageDimensionResizer()
 
     init {
         require(seed.size == 32) { "resource lineage seed must be exactly 32 bytes" }
@@ -107,34 +116,100 @@ class OwnedResourceTransformer(
                 exclusions += entry.exclusion(result.reason.toResourceExclusion())
             }
         }
-        val imageCandidates = imageResults.values.count { it.status != ImageTransformStatus.EXCLUDED }
-        val transformedImages = imageResults.values.count { it.status == ImageTransformStatus.TRANSFORMED }
+        val resizeResults = structurallyEligible
+            .filter { entry ->
+                entry.imageDiversificationEnabled && entry.imageFormat != null && entry.bytes != null &&
+                    canResize(entry, imageResults[entry])
+            }
+            .associateWith { entry ->
+                dimensionResizer.resize(requireNotNull(entry.bytes), requireNotNull(entry.imageFormat), contentSalt)
+            }
+        val imageEntries = (imageResults.keys + resizeResults.keys).distinct()
+        val imageCandidates = imageEntries.count { entry ->
+            imageResults[entry]?.status != ImageTransformStatus.EXCLUDED &&
+                resizeResults[entry]?.status != ImageTransformStatus.EXCLUDED
+        }
+        val transformedImages = imageEntries.count { entry ->
+            resizeResults[entry]?.status == ImageTransformStatus.TRANSFORMED ||
+                imageResults[entry]?.status == ImageTransformStatus.TRANSFORMED
+        }
         val imageCoverage = if (imageCandidates == 0) 1.0 else transformedImages.toDouble() / imageCandidates
 
         val renameEligible = structurallyEligible.filter { entry ->
-            imageResults[entry]?.status.let { status -> status == null || status == ImageTransformStatus.TRANSFORMED }
+            val diversificationStatus = imageResults[entry]?.status
+            val resizeStatus = resizeResults[entry]?.status
+            when {
+                diversificationStatus == ImageTransformStatus.EXCLUDED -> false
+                entry.imageDiversificationEnabled && resizeStatus == ImageTransformStatus.INELIGIBLE -> false
+                entry.imageDiversificationEnabled && entry.aabPath?.lowercase()?.endsWith(".webp") == true &&
+                    entry.bytes?.let(::isAnimatedWebp) == true -> false
+                resizeStatus == ImageTransformStatus.EXCLUDED -> false
+                diversificationStatus == ImageTransformStatus.INELIGIBLE ->
+                    resizeStatus == ImageTransformStatus.TRANSFORMED
+                else -> true
+            }
         }
-        imageResults.filterValues { it.status == ImageTransformStatus.INELIGIBLE }.keys.forEach { entry ->
-            exclusions += entry.exclusion(ResourceExclusionReason.UNSAFE_OR_UNVERIFIED_IMAGE)
-        }
+        imageResults.filterValues { it.status == ImageTransformStatus.INELIGIBLE }.keys
+            .filterNot { resizeResults[it]?.status == ImageTransformStatus.TRANSFORMED }
+            .forEach { entry ->
+                exclusions += entry.exclusion(ResourceExclusionReason.UNSAFE_OR_UNVERIFIED_IMAGE)
+            }
 
         val allocator = previousNameState?.let { ResourceNameAllocator.restore(seed, it) } ?: ResourceNameAllocator(seed)
         val allocation = allocator.reconcile(renameEligible, generation)
         val accepted = imageCoverage >= minimumImageCoverage
         val failure = if (accepted) null else ResourceTransformFailure.IMAGE_COVERAGE_NOT_MET
         val imageReports = imageResults.map { (entry, result) ->
+            val resize = resizeResults[entry]
+            val status = if (resize?.status == ImageTransformStatus.TRANSFORMED) {
+                ImageTransformStatus.TRANSFORMED
+            } else {
+                result.status
+            }
+            ImageResourceReport(
+                module = entry.module,
+                resourceId = entry.resourceId,
+                oldPath = requireNotNull(entry.aabPath),
+                status = status,
+                reason = if (status == ImageTransformStatus.TRANSFORMED) {
+                    ImageIneligibilityReason.TRANSFORMED
+                } else {
+                    result.reason
+                },
+                metrics = if (resize?.dimensionChanged == true) null else result.metrics,
+                originalWidth = resize?.originalWidth,
+                originalHeight = resize?.originalHeight,
+                newWidth = resize?.newWidth,
+                newHeight = resize?.newHeight,
+                dimensionChanged = resize?.dimensionChanged == true,
+                resizeFallback = resize?.fallback == true,
+                resizeFallbackReason = resize?.fallbackReason?.name,
+            )
+        } + resizeResults.keys.filterNot(imageResults::containsKey).map { entry ->
+            val result = resizeResults.getValue(entry)
             ImageResourceReport(
                 module = entry.module,
                 resourceId = entry.resourceId,
                 oldPath = requireNotNull(entry.aabPath),
                 status = result.status,
-                reason = result.reason,
-                metrics = result.metrics,
+                reason = if (result.status == ImageTransformStatus.TRANSFORMED) {
+                    ImageIneligibilityReason.TRANSFORMED
+                } else {
+                    ImageIneligibilityReason.UNSUPPORTED_FORMAT
+                },
+                metrics = null,
+                originalWidth = result.originalWidth,
+                originalHeight = result.originalHeight,
+                newWidth = result.newWidth,
+                newHeight = result.newHeight,
+                dimensionChanged = result.dimensionChanged,
+                resizeFallback = result.fallback,
+                resizeFallbackReason = result.fallbackReason?.name,
             )
         }.sortedBy(ImageResourceReport::oldPath)
 
         val outputEntries = if (accepted) {
-            buildOutputEntries(renameEligible, allocation.report, imageResults)
+            buildOutputEntries(renameEligible, allocation.report, imageResults, resizeResults)
         } else {
             emptyList()
         }
@@ -159,6 +234,7 @@ class OwnedResourceTransformer(
         eligible: List<ResourceInventoryEntry>,
         renameReport: ResourceRenameReport,
         imageResults: Map<ResourceInventoryEntry, PngDiversificationResult>,
+        resizeResults: Map<ResourceInventoryEntry, ImageDimensionResult>,
     ): List<TransformedResourceEntry> {
         val renamesByOldPath = renameReport.renames.flatMap(ResourceRename::entries)
             .associateBy(ResourceEntryRename::oldPath)
@@ -167,13 +243,16 @@ class OwnedResourceTransformer(
             val originalBytes = requireNotNull(entry.bytes) { "AAB inventory entry $oldPath has no bytes" }
             val rename = requireNotNull(renamesByOldPath[oldPath]) { "rename report omitted $oldPath" }
             val imageResult = imageResults[entry]
-            val transformedBytes = imageResult?.transformedBytes ?: originalBytes
+            val transformedBytes = resizeResults[entry]?.transformedBytes ?: imageResult?.transformedBytes ?: originalBytes
             TransformedResourceEntry(
                 module = entry.module,
                 resourceId = entry.resourceId,
                 oldPath = oldPath,
                 newPath = rename.newPath,
-                action = if (imageResult?.status == ImageTransformStatus.TRANSFORMED) {
+                action = if (
+                    resizeResults[entry]?.status == ImageTransformStatus.TRANSFORMED ||
+                    imageResult?.status == ImageTransformStatus.TRANSFORMED
+                ) {
                     ResourceEntryTransformAction.RENAMED_AND_TRANSFORMED
                 } else {
                     ResourceEntryTransformAction.RENAMED
@@ -210,17 +289,59 @@ class OwnedResourceTransformer(
         -> lowerPath?.endsWith(".xml") == true && entry.bytes != null
         ResourceType.DRAWABLE ->
             (lowerPath?.endsWith(".xml") == true || lowerPath?.endsWith(".png") == true ||
-                lowerPath?.endsWith(".webp") == true) && entry.bytes != null
+                lowerPath?.endsWith(".webp") == true || lowerPath?.endsWith(".jpg") == true ||
+                lowerPath?.endsWith(".jpeg") == true) && entry.bytes != null
         ResourceType.MIPMAP ->
             (lowerPath?.endsWith(".xml") == true || lowerPath?.endsWith(".png") == true ||
-                lowerPath?.endsWith(".webp") == true) && entry.bytes != null
+                lowerPath?.endsWith(".webp") == true || lowerPath?.endsWith(".jpg") == true ||
+                lowerPath?.endsWith(".jpeg") == true) && entry.bytes != null
         ResourceType.FONT ->
             FONT_EXTENSIONS.any { lowerPath?.endsWith(it) == true } && entry.bytes != null
         ResourceType.RAW -> lowerPath != null && entry.bytes != null
     }
 
     private fun isPng(entry: ResourceInventoryEntry): Boolean =
-        entry.type == ResourceType.DRAWABLE && entry.aabPath?.lowercase()?.endsWith(".png") == true
+        entry.type in setOf(ResourceType.DRAWABLE, ResourceType.MIPMAP) &&
+            entry.aabPath?.lowercase()?.endsWith(".png") == true
+
+    private fun canResize(
+        entry: ResourceInventoryEntry,
+        diversification: PngDiversificationResult?,
+    ): Boolean {
+        if (entry.aabPath?.lowercase()?.endsWith(".webp") == true &&
+            entry.bytes?.let(::isAnimatedWebp) == true
+        ) return false
+        return when {
+            diversification == null -> true
+            diversification.status == ImageTransformStatus.EXCLUDED -> false
+            diversification.status == ImageTransformStatus.TRANSFORMED -> true
+            diversification.reason == ImageIneligibilityReason.NO_SAFE_PERTURBATION -> true
+            diversification.reason == ImageIneligibilityReason.BYTE_GROWTH_LIMIT -> true
+            else -> false
+        }
+    }
+
+    private fun isAnimatedWebp(bytes: ByteArray): Boolean {
+        if (bytes.size < 16 || !bytes.copyOfRange(0, 4).contentEquals("RIFF".encodeToByteArray()) ||
+            !bytes.copyOfRange(8, 12).contentEquals("WEBP".encodeToByteArray())
+        ) return false
+        var offset = 12
+        while (offset + 8 <= bytes.size) {
+            val type = bytes.copyOfRange(offset, offset + 4).toString(Charsets.ISO_8859_1)
+            val length = littleEndianInt(bytes, offset + 4)
+            if (length < 0 || offset + 8L + length > bytes.size) return false
+            if (type == "ANIM") return true
+            if (type == "VP8X" && length >= 5 && (bytes[offset + 8 + 4].toInt() and 0x02) != 0) return true
+            offset += 8 + length + (length and 1)
+        }
+        return false
+    }
+
+    private fun littleEndianInt(bytes: ByteArray, offset: Int): Int =
+        (bytes[offset].toInt() and 0xff) or
+            ((bytes[offset + 1].toInt() and 0xff) shl 8) or
+            ((bytes[offset + 2].toInt() and 0xff) shl 16) or
+            ((bytes[offset + 3].toInt() and 0xff) shl 24)
 
     private fun ResourceInventoryEntry.exclusion(reason: ResourceExclusionReason) = ResourceExclusion(
         module = module,
@@ -235,6 +356,8 @@ class OwnedResourceTransformer(
         ImageIneligibilityReason.UNOWNED_MODULE -> ResourceExclusionReason.UNOWNED_MODULE
         ImageIneligibilityReason.OUTSIDE_CONFIGURED_WEBP_SCOPE ->
             ResourceExclusionReason.OUTSIDE_CONFIGURED_WEBP_SCOPE
+        ImageIneligibilityReason.OUTSIDE_CONFIGURED_IMAGE_SCOPE ->
+            ResourceExclusionReason.OUTSIDE_CONFIGURED_IMAGE_SCOPE
         ImageIneligibilityReason.NINE_PATCH -> ResourceExclusionReason.NINE_PATCH
         ImageIneligibilityReason.ANIMATION -> ResourceExclusionReason.ANIMATION
         ImageIneligibilityReason.NOTIFICATION_ICON -> ResourceExclusionReason.NOTIFICATION_ICON
@@ -246,6 +369,7 @@ class OwnedResourceTransformer(
         ImageIneligibilityReason.UNVERIFIED_PNG,
         ImageIneligibilityReason.UNVERIFIED_WEBP,
         ImageIneligibilityReason.BYTE_GROWTH_LIMIT,
+        ImageIneligibilityReason.CORPUS_PHASH_CONFLICT,
         ImageIneligibilityReason.NO_SAFE_PERTURBATION,
         ImageIneligibilityReason.TRANSFORMED,
         -> ResourceExclusionReason.UNSAFE_OR_UNVERIFIED_IMAGE

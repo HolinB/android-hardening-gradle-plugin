@@ -40,7 +40,7 @@ class HardeningLauncherContractTest {
         val result = runLauncher(listOf("--version"), emptyMap())
 
         assertEquals(0, result.exitCode)
-        assertEquals("1.2.0", result.output.trim())
+        assertEquals("1.3.0", result.output.trim())
     }
 
     @Test
@@ -490,7 +490,7 @@ class HardeningLauncherContractTest {
     }
 
     private fun cachedRepository(cache: Path) {
-        val versionRoot = cache.resolve("1.2.0")
+        val versionRoot = cache.resolve("1.3.0")
         val marker = versionRoot.resolve(markerPath())
         marker.parent.createDirectories()
         marker.writeText("plugin")
@@ -508,7 +508,7 @@ class HardeningLauncherContractTest {
                 "echo build >> source-build.log\n" +
                 "sleep 1\n" +
                 "mkdir -p build/distributions\n" +
-                "cp \"${archive}\" \"build/distributions/hardening-gradle-plugin-1.2.0-portable-maven.zip\"\n",
+                "cp \"${archive}\" \"build/distributions/hardening-gradle-plugin-1.3.0-portable-maven.zip\"\n",
         )
         Files.setPosixFilePermissions(
             wrapper,
@@ -571,8 +571,8 @@ class HardeningLauncherContractTest {
     }
 
     private fun markerPath(): String =
-        "repository/com/holin/android/hardening/hardening-gradle-plugin/1.2.0/" +
-            "hardening-gradle-plugin-1.2.0.jar"
+        "repository/com/holin/android/hardening/hardening-gradle-plugin/1.3.0/" +
+            "hardening-gradle-plugin-1.3.0.jar"
 
     private fun server(handler: (com.sun.net.httpserver.HttpExchange) -> Unit): HttpServer =
         HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0).also { server ->
@@ -639,7 +639,7 @@ class HardeningLauncherContractTest {
         val launcher = launcherClass()
         val install = launcher.getDeclaredMethod("installArchive", Path::class.java, Path::class.java, Path::class.java)
         install.isAccessible = true
-        install.invoke(null, archive, cache.resolve("1.2.0"), cache)
+        install.invoke(null, archive, cache.resolve("1.3.0"), cache)
     }
 
     private fun assertLauncherFailure(action: () -> Unit): Throwable =

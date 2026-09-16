@@ -61,7 +61,7 @@ class PortableStateMigrationDescriptorCodecTest {
             "com.example.portable",
             "com.example.portable.qa",
             fromContentDomain,
-            CanonicalContentDomain.HOLIN_1_2.id,
+            CanonicalContentDomain.HOLIN_1_3.id,
             "a".repeat(64),
             "b".repeat(64),
             "11111111-2222-3333-4444-555555555555",

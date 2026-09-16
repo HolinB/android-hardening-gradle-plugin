@@ -15,6 +15,7 @@ enum class ImageIneligibilityReason {
     TRANSFORMED,
     UNOWNED_MODULE,
     OUTSIDE_CONFIGURED_WEBP_SCOPE,
+    OUTSIDE_CONFIGURED_IMAGE_SCOPE,
     NINE_PATCH,
     ANIMATION,
     NOTIFICATION_ICON,
@@ -27,6 +28,7 @@ enum class ImageIneligibilityReason {
     UNVERIFIED_WEBP,
     NO_SAFE_PERTURBATION,
     BYTE_GROWTH_LIMIT,
+    CORPUS_PHASH_CONFLICT,
 }
 
 data class PngDiversificationResult(
@@ -34,11 +36,13 @@ data class PngDiversificationResult(
     val reason: ImageIneligibilityReason,
     val transformedBytes: ByteArray? = null,
     val metrics: PngComparisonMetrics? = null,
+    val nearestCorpusPHashDistance: Int? = null,
 )
 
 class PngDiversifier(
     private val minimumSsim: Double = 0.995,
     private val minimumPHashDistance: Int = 11,
+    private val ordinaryImageCorpus: OrdinaryImageCorpus = OrdinaryImageCorpus.empty(),
 ) {
     init {
         require(minimumSsim in HARD_MINIMUM_SSIM..1.0) {
@@ -51,7 +55,7 @@ class PngDiversifier(
 
     fun diversify(entry: ResourceInventoryEntry, contentSalt: ByteArray): PngDiversificationResult {
         require(contentSalt.isNotEmpty()) { "content salt must not be empty" }
-        exclusion(entry)?.let { return excluded(it) }
+        exclusionReason(entry)?.let { return excluded(it) }
         val path = requireNotNull(entry.aabPath)
         val bytes = requireNotNull(entry.bytes)
         val lowerPath = path.lowercase()
@@ -68,6 +72,8 @@ class PngDiversifier(
         val resourceIdentity = path.toByteArray(Charsets.UTF_8)
         val saltedImageSeed = MessageDigest.getInstance("SHA-256").digest(contentSalt + sourceHash + resourceIdentity)
         val sourceHashSignature = ImageMetrics.perceptualHash(verified.image)
+        var rejectedForCorpus = false
+        var nearestRejectedCorpusDistance: Int? = null
         for (candidateImage in ImageDiversificationCandidates.generate(
             source = verified.image,
             minimumPHashDistance = minimumPHashDistance,
@@ -81,7 +87,27 @@ class PngDiversifier(
 
             val candidateBytes = encode(candidateImage) ?: continue
             if (candidateBytes.contentEquals(bytes)) continue
-            val metrics = runCatching { ImageMetrics.comparePng(bytes, candidateBytes) }.getOrNull() ?: continue
+            val baseMetrics = runCatching { ImageMetrics.comparePng(bytes, candidateBytes) }.getOrNull() ?: continue
+            val decodedCandidate = VerifiedPng.read(candidateBytes)?.image ?: continue
+            val nearestCorpusPHashDistance = ordinaryImageCorpus.nearestPHashDistance(decodedCandidate)
+            if (nearestCorpusPHashDistance != null && nearestCorpusPHashDistance < minimumPHashDistance) {
+                rejectedForCorpus = true
+                nearestRejectedCorpusDistance = minOf(
+                    nearestRejectedCorpusDistance ?: nearestCorpusPHashDistance,
+                    nearestCorpusPHashDistance,
+                )
+                continue
+            }
+            val metrics = PngComparisonMetrics(
+                baseMetrics.width,
+                baseMetrics.height,
+                baseMetrics.alphaPreserved,
+                baseMetrics.ssim,
+                baseMetrics.pHashDistance,
+                baseMetrics.originalSha256,
+                baseMetrics.transformedSha256,
+                nearestCorpusPHashDistance,
+            )
             if (
                 metrics.alphaPreserved &&
                 metrics.ssim >= minimumSsim &&
@@ -89,23 +115,30 @@ class PngDiversifier(
                 metrics.originalSha256 != metrics.transformedSha256
             ) {
                 return PngDiversificationResult(
-                    status = ImageTransformStatus.TRANSFORMED,
-                    reason = ImageIneligibilityReason.TRANSFORMED,
-                    transformedBytes = candidateBytes,
-                    metrics = metrics,
+                    ImageTransformStatus.TRANSFORMED,
+                    ImageIneligibilityReason.TRANSFORMED,
+                    candidateBytes,
+                    metrics,
+                    nearestCorpusPHashDistance,
                 )
             }
         }
-        return ineligible(ImageIneligibilityReason.NO_SAFE_PERTURBATION)
+        return ineligible(
+            if (rejectedForCorpus) ImageIneligibilityReason.CORPUS_PHASH_CONFLICT
+            else ImageIneligibilityReason.NO_SAFE_PERTURBATION,
+            nearestRejectedCorpusDistance,
+        )
     }
 
-    private fun exclusion(entry: ResourceInventoryEntry): ImageIneligibilityReason? = when {
+    internal fun exclusionReason(entry: ResourceInventoryEntry): ImageIneligibilityReason? = when {
         entry.origin == ResourceOrigin.DEPENDENCY -> ImageIneligibilityReason.DEPENDENCY_RESOURCE
         entry.origin == ResourceOrigin.GENERATED -> ImageIneligibilityReason.GENERATED_RESOURCE
         entry.externallyNamed -> ImageIneligibilityReason.EXTERNALLY_NAMED
         entry.notificationIcon -> ImageIneligibilityReason.NOTIFICATION_ICON
         entry.animation -> ImageIneligibilityReason.ANIMATION
-        entry.type != ResourceType.DRAWABLE || entry.aabPath == null || entry.bytes == null ->
+        entry.aabPath?.lowercase()?.endsWith(".9.png") == true -> ImageIneligibilityReason.NINE_PATCH
+        entry.type !in setOf(ResourceType.DRAWABLE, ResourceType.MIPMAP) ||
+            entry.aabPath == null || entry.bytes == null ->
             ImageIneligibilityReason.UNSUPPORTED_FORMAT
         else -> null
     }
@@ -138,9 +171,15 @@ class PngDiversifier(
         reason = reason,
     )
 
-    private fun ineligible(reason: ImageIneligibilityReason) = PngDiversificationResult(
-        status = ImageTransformStatus.INELIGIBLE,
-        reason = reason,
+    private fun ineligible(
+        reason: ImageIneligibilityReason,
+        nearestCorpusPHashDistance: Int? = null,
+    ) = PngDiversificationResult(
+        ImageTransformStatus.INELIGIBLE,
+        reason,
+        null,
+        null,
+        nearestCorpusPHashDistance,
     )
 
     private fun seedLong(bytes: ByteArray): Long {

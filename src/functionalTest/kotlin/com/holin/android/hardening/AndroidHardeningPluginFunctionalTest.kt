@@ -467,7 +467,7 @@ class AndroidHardeningPluginFunctionalTest {
                 "com.example.demo.fixture",
                 "com.example.demo.fixture.app",
                 CanonicalContentDomain.LEGACY_V1.id,
-                CanonicalContentDomain.HOLIN_1_2.id,
+                CanonicalContentDomain.HOLIN_1_3.id,
                 sourceConfiguration,
                 targetConfiguration,
                 identity.getValue("lineageId") as String,

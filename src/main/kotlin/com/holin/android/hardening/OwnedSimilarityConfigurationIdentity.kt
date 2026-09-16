@@ -56,7 +56,7 @@ internal object OwnedSimilarityConfigurationIdentity {
         }
         val fixedSeedSha256 = extension.reproducibility.fixedSeed.orNull
             ?.let(FixedSeedDerivation::seedSha256)
-        append(if (fixedSeedSha256 == null) "owned-similarity-config-v4\n" else "owned-similarity-config-v5\n")
+        append("owned-similarity-config-v6\n")
         field("projectKey", extension.projectKey.get())
         field("variant", variant)
         field("namespace", namespace)
@@ -99,6 +99,8 @@ internal object OwnedSimilarityConfigurationIdentity {
             "resources.bitmapDiversification.minimumPHashDistance",
             extension.resources.bitmapDiversification.minimumPHashDistance.get(),
         )
+        field("bundle.dependencyMetadata", extension.bundle.dependencyMetadata.get().name)
+        field("bundle.structuralMetadataEntryCount", extension.bundle.structuralMetadataEntryCount.get())
         field("contracts.unresolvedAppReflection", extension.contracts.unresolvedAppReflection.get().name)
         field("contracts.unresolvedResourceLookup", extension.contracts.unresolvedResourceLookup.get().name)
         field("contracts.externalNames", extension.contracts.externalNames.get().name)
@@ -122,6 +124,21 @@ internal object OwnedSimilarityConfigurationIdentity {
         field("ownedModules", declaredOwnership.keys.sorted().joinToString(","))
         field("ownedSourceSets", declaredOwnership.entries.sortedBy { it.key }.joinToString(";") { module ->
             "${module.key}:${module.value.sorted().joinToString(",")}"
+        })
+        val declaredImageIncludes = ownership?.modules?.associate { it.path to it.images.includes }
+            ?: extension.ownership.declaredImageIncludes()
+        val declaredImageExcludes = ownership?.modules?.associate { it.path to it.images.excludes }
+            ?: extension.ownership.declaredImageExcludes()
+        val declaredImageFormats = ownership?.modules?.associate { it.path to it.images.formats.map(ImageFormat::name).toSet() }
+            ?: extension.ownership.declaredImageFormats().mapValues { (_, formats) -> formats.map(ImageFormat::name).toSet() }
+        field("ownedImageIncludes", declaredImageIncludes.entries.sortedBy { it.key }.joinToString(";") {
+            "${it.key}:${it.value.sorted().joinToString(",")}"
+        })
+        field("ownedImageExcludes", declaredImageExcludes.entries.sortedBy { it.key }.joinToString(";") {
+            "${it.key}:${it.value.sorted().joinToString(",")}"
+        })
+        field("ownedImageFormats", declaredImageFormats.entries.sortedBy { it.key }.joinToString(";") {
+            "${it.key}:${it.value.sorted().joinToString(",")}"
         })
         ownership?.let { resolved ->
             field(

@@ -653,6 +653,8 @@ internal class AgpHardeningAdapter {
             minimumImageCoverage.set(extension.resources.bitmapDiversification.minimumCoverage)
             minimumImageSsim.set(extension.resources.bitmapDiversification.minimumSsim)
             minimumImagePHashDistance.set(extension.resources.bitmapDiversification.minimumPHashDistance)
+            dependencyMetadata.set(extension.bundle.dependencyMetadata)
+            structuralMetadataEntryCount.set(extension.bundle.structuralMetadataEntryCount)
             artifactBoundary.set(project.layout.buildDirectory)
             repositoryRoot.set(project.rootProject.layout.projectDirectory)
             ownership.set(resolvedOwnership)

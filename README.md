@@ -1,6 +1,6 @@
-# Android Hardening Gradle Plugin 1.2.0
+# Android Hardening Gradle Plugin 1.3.0
 
-[English](README.en.md)
+[English](README.en.md) | [1.3.0 更新日志](CHANGELOG.md)
 
 `com.holin.android.hardening` 是一个面向 Android Application Variant 的本地二进制 Gradle 插件。它在显式授权的
 Variant 和显式声明的代码/资源所有权范围内，复用 R8 映射、稳定化自有名称、审计外部契约、改写并重新签名 AAB，
@@ -35,15 +35,15 @@ Hardening 任务。
 先从同一 Release 获取 ZIP 和发布的 SHA-256，再进行解压。不要只相信文件名。
 
 ```shell
-shasum -a 256 -c hardening-gradle-plugin-1.2.0-portable-maven.zip.sha256
-mkdir -p .local/hardening-1.2.0
-unzip -q hardening-gradle-plugin-1.2.0-portable-maven.zip -d .local/hardening-1.2.0
-(cd .local/hardening-1.2.0 && shasum -a 256 -c SHA256SUMS)
+shasum -a 256 -c hardening-gradle-plugin-1.3.0-portable-maven.zip.sha256
+mkdir -p .local/hardening-1.3.0
+unzip -q hardening-gradle-plugin-1.3.0-portable-maven.zip -d .local/hardening-1.3.0
+(cd .local/hardening-1.3.0 && shasum -a 256 -c SHA256SUMS)
 ```
 
-Linux 可使用 `sha256sum -c hardening-gradle-plugin-1.2.0-portable-maven.zip.sha256` 校验外层 ZIP，并使用
+Linux 可使用 `sha256sum -c hardening-gradle-plugin-1.3.0-portable-maven.zip.sha256` 校验外层 ZIP，并使用
 `sha256sum -c SHA256SUMS` 校验解压内容。PowerShell 可用
-`Get-FileHash .\hardening-gradle-plugin-1.2.0-portable-maven.zip -Algorithm SHA256` 对照 Release 值。
+`Get-FileHash .\hardening-gradle-plugin-1.3.0-portable-maven.zip -Algorithm SHA256` 对照 Release 值。
 如启用 Gradle dependency verification，可审阅后把 ZIP 中的 `verification-metadata.xml` 放到消费项目的
 `gradle/verification-metadata.xml`。
 
@@ -59,16 +59,16 @@ Maven 仓库、不创建 Release/tag、不安装或运行 App，也不通知外�
 仍由 Actions 之外的本地手动命令执行：
 
 ```shell
-gh release upload v1.2.0 \
-  build/distributions/hardening-gradle-plugin-1.2.0-portable-maven.zip \
-  build/distributions/hardening-gradle-plugin-1.2.0-portable-maven.zip.sha256
+gh release upload v1.3.0 \
+  build/distributions/hardening-gradle-plugin-1.3.0-portable-maven.zip \
+  build/distributions/hardening-gradle-plugin-1.3.0-portable-maven.zip.sha256
 ```
 
 ## `hardeningw` 启动器
 
 启动器要求 `--project-dir`、`--` 分隔符和至少一个转发给消费项目 Wrapper 的参数。它校验 JDK/Wrapper/SDK，下载并按固定
 Release SHA-256 和内部 `SHA256SUMS` 验证 ZIP，原子写入版本缓存，再注入
-`-PhardeningPluginRepo=<cache>/1.2.0/repository`。下载不可用时，在插件源码目录运行还可回退到本地
+`-PhardeningPluginRepo=<cache>/1.3.0/repository`。下载不可用时，在插件源码目录运行还可回退到本地
 `packagePortableHardeningPlugin`。
 
 POSIX:
@@ -128,7 +128,7 @@ pluginManagement {
 plugins {
     id("com.android.application") version "8.13.2" apply false
     id("org.jetbrains.kotlin.android") version "2.3.0" apply false
-    id("com.holin.android.hardening") version "1.2.0" apply false
+    id("com.holin.android.hardening") version "1.3.0" apply false
 }
 ```
 
@@ -144,9 +144,26 @@ plugins {
 直接运行：
 
 ```shell
-./gradlew -PhardeningPluginRepo=.local/hardening-1.2.0/repository \
+./gradlew -PhardeningPluginRepo=.local/hardening-1.3.0/repository \
   -PandroidHardening=true :mobile:hardeningBundleDemoQa
 ```
+
+在真实项目中先配置生产源码、Variant 签名和已经应用的 legacy plugin，审阅并捕获真实 legacy plugin baseline；中性示例的
+`com.example.legacy` 只是占位，不能直接用于生产构建。以下命令分别调用，不把普通包和 Hardening 包混为一个构建结果：
+
+```shell
+./gradlew -PhardeningPluginRepo=.local/hardening-1.3.0/repository \
+  -PandroidHardening=false :mobile:bundleDemoQa
+./gradlew -PhardeningPluginRepo=.local/hardening-1.3.0/repository \
+  -PandroidHardening=true :mobile:hardeningBundleDemoQa
+./gradlew -PhardeningPluginRepo=.local/hardening-1.3.0/repository \
+  -PandroidHardening=true :mobile:captureHardeningBaselineDemoQa
+./gradlew -PhardeningPluginRepo=.local/hardening-1.3.0/repository \
+  -PandroidHardening=true :mobile:compareHardeningDemoQa
+```
+
+先审阅首次构建的 mapping、签名和报告，再捕获不可变 baseline；配置身份变化后需明确重新捕获。需 APK 时可单独运行
+`:mobile:hardeningAssembleDemoQa`；设备安装/启动只有 `hardeningRunDemoQa` 会执行，本 Release 验证未运行该任务。
 
 ## 完整 `androidHardening` Kotlin DSL
 
@@ -170,8 +187,11 @@ androidHardening {
         module(":mobile") {
             sourceSets.addAll("main", "demo")
             manifestFiles.from(layout.projectDirectory.file("src/demo/AndroidManifest.xml"))
-            webp {
+            images {
+                formats(PNG, WEBP)
+                include("src/main/res/drawable/**/*.png")
                 include("src/demoResources/res/drawable/**/*.webp")
+                exclude("src/main/res/drawable/**/*.9.png")
                 exclude("src/demoResources/res/drawable/no_rewrite/**/*.webp")
             }
         }
@@ -246,6 +266,11 @@ androidHardening {
         }
     }
 
+    bundle {
+        dependencyMetadata.set(OMIT)
+        structuralMetadataEntryCount.set(16)
+    }
+
     contracts {
         unresolvedAppReflection.set(FAIL_BUILD)
         unresolvedResourceLookup.set(FAIL_BUILD)
@@ -309,14 +334,30 @@ androidHardening {
 解析的默认行为；提供属性时，显式值会覆盖对应的自动解析结果。
 
 `ownership.module` 中的 source set 顺序也是优先级顺序，必须是已存在的 Android 生产 source set。自定义 `res.srcDir`
-由 AGP public API 解析，但 WebP glob 是模块相对路径。显式 `hardcodedReferences.includeGlobs` 必须实际匹配至少一个可审计的
+由 AGP public API 解析，但图片 glob 是模块相对路径。显式 `hardcodedReferences.includeGlobs` 必须实际匹配至少一个可审计的
 生产文件，否则失败，防止拼错范围后静默放行。
 
-## WebP 和契约保护
+## 图片、Bundle 元数据和契约保护
 
-WebP 改写默认关闭：只有某个所有权模块的 `webp.include(...)` 命中且未被 `exclude(...)` 命中的自有 drawable WebP 才会
-启用。排除优先于包含。依赖/生成资源、外部命名资源、通知图标、动画 WebP、非 drawable、无法验证的 WebP 和找不到安全
-扰动的图片不会改写。候选还必须保持尺寸和每个 alpha sample，达到 SSIM/pHash 阈值并满足字节增长限制。
+图片改写默认关闭：`images.formats(...)` 和至少一个 `include(...)` 都必须显式声明，且候选必须属于声明的自有生产资源。
+`PNG`、`WEBP`、`JPEG` 是有效格式，排除优先于包含；旧 `webp { ... }` 会合并为 WebP 范围，保持 1.2.0 配置兼容。
+1.3.0 的最终 AAB 像素转换器覆盖 PNG/WebP。JPEG 可以进入所有权和报告范围，但没有通过同等验证的安全转换路径时会以
+`UNSUPPORTED_FORMAT` 失败关闭并参与覆盖率 gate，而不是强制改写。
+
+依赖/生成资源、外部命名资源、通知图标、动画、非 drawable 和 NinePatch 不会改写。每个转换候选必须保持宽高和逐采样
+alpha，达到 SSIM 与源图 pHash 门槛，并且与普通 AAB 中任意可解码 PNG/WebP/JPEG 保持配置的最小 pHash 距离。报告记录
+最近语料距离、排除原因以及 PNG/WebP/JPEG 分格式数量和字节覆盖率；总数量和总字节覆盖率都必须达到
+`resources.bitmapDiversification.minimumCoverage`。
+
+`bundle.dependencyMetadata` 默认 `PRESERVE`。`OMIT` 只移除精确路径
+`BUNDLE-METADATA/com.android.tools.build.libraries/dependencies.pb`，不存在时报告 `ALREADY_ABSENT`；它不改 Gradle 依赖图、
+坐标、版本或运行时代码。`bundle.structuralMetadataEntryCount` 默认 `0`，范围 `0..64`；启用后按 content salt、application ID、
+源 AAB hash 和序号确定性生成 32 字节条目，只写入
+`BUNDLE-METADATA/com.holin.android.hardening/structure/v1/`。插件会验证这两类 AAB 元数据都没有进入 universal APK。
+
+Rewrite manifest 写出 Schema v2；Bundle plan 在启用新元数据设置或普通 AAB 含可解码图片语料时写出 v2，
+未触发新字段的默认路径仍可写出 v1。两者兼容读取旧 Schema v1。图片范围、依赖元数据模式和结构条目数都进入配置
+身份；修改后必须在审阅输入的基础上重新捕获 baseline，不能复用旧配置身份的证据。
 
 R8 名称策略不会用“能编译”代替契约安全。审计会保留并报告 Gson/Bean/Serializable/ObjectBox/JNI/JavaScript 契约，
 解析硬编码引用，并对未解析的自有反射或资源查找失败关闭。`preserveExactRules` 用于必须原样保留的已审阅规则；
@@ -355,6 +396,7 @@ APK/AAB 当作 Hardening 产物。插件也不会调用上传；上传必须在�
 - `build/outputs/hardening/<variant>/<variant>-ordinary-universal.apk`
 - `build/reports/hardening/<variant>/audit.json`
 - `build/reports/hardening/<variant>/bundle-verification.json`
+- `build/hardening/<variant>/invocations/<invocation-id>/` 下的 `transformation-report.json` 与 `rewrite-manifest.json`
 - `build/reports/hardening/<variant>/mapping-verification.json`
 - `build/reports/hardening/<variant>/universal-apk-verification.json`
 - `build/reports/hardening/<variant>/similarity-report.json` 和 `.md`
@@ -367,6 +409,12 @@ APK/AAB 当作 Hardening 产物。插件也不会调用上传；上传必须在�
 不应把首次构建描述为“已证明跨版本稳定”。以后 `reusePrevious=true` 把 App 自有的旧映射作为 `-applymapping` 输入，验证任务
 逐符号检查 mapping continuity，并使用当前 R8 官方 Retrace 恢复类、方法和行号。损坏或身份不匹配的 current state 在
 `quarantineInvalid=true` 时按内容哈希隔离；已验证状态按 AAB 身份写入不可变 `history`。
+
+阅读 Schema v2 `transformation-report.json` 时，先检查 `resources.images[]` 的 `status`、`reason`、尺寸、
+`alphaPreserved`、`ssim`、`pHashDistance` 和 `nearestCorpusPHashDistance`，再核对 `imageFormatCoverage` 及总数量/字节
+覆盖率；`bundle` 节记录 `dependencyMetadataMode`、`dependencyMetadataStatus`、原始 SHA-256 和新增结构路径。
+`rewrite-manifest.json` 的 `PRESERVED`/`RENAMED`/`TRANSFORMED`/`REMOVED`/`ADDED` 描述每个输入/输出条目，不能将
+`ADDED` 理解为运行时代码。
 
 首次相似度比较前，先在审阅过的输入上运行 `captureHardeningBaselineDemoQa`。Baseline 与所有权和完整配置身份绑定；配置漂移、
 错误 Variant 或不同输入不能冒充同一 baseline。默认 v1 强制“相对 baseline 至少改善 `minimumImprovementPoints`”；
@@ -392,16 +440,19 @@ APK/AAB 当作 Hardening 产物。插件也不会调用上传；上传必须在�
   -PandroidHardening=true --offline :mobile:hardeningBundleDemoQa
 ```
 
-便携 ZIP 不包含 AGP/Kotlin，所以“已经解压 ZIP”不等于消费构建已完全离线。需要完整、校验固定的离线矩阵时，使用发布的
-offline TestKit ZIP；它携带支持矩阵、Gradle distributions、合并仓库、依赖校验元数据和逐文件 checksum。不要让离线构建
-回退到未知宿主缓存或网络。
+便携 ZIP 不包含 AGP/Kotlin，所以“已经解压 ZIP”不等于消费构建已完全离线。仓库维护者可使用
+`prepareOfflineTestKitEnvironment`、`packageOfflineHardeningTestKit` 和 `verifyOfflineHardeningTestKit` 验证完整、checksum 固定的
+离线矩阵。1.3.0 GitHub Release 不附带 Offline TestKit；消费方必须自行准备并校验 Gradle/AGP/Kotlin/AAPT2 与应用依赖，
+不要让离线构建回退到未知宿主缓存或网络。
 
 ## 排障
 
 - **提示 Hardening disabled**：确认使用精确的 `-PandroidHardening=true`，并调用 `hardeningBundle<Variant>`、`hardeningAssemble<Variant>` 或 `hardeningRun<Variant>`。
 - **找不到插件**：确认 `hardeningPluginRepo` 指向解压目录内的 `repository`，且 settings 没有 `includeBuild` 或远程 Hardening 仓库替代。
 - **工具链 capability 缺失**：升级到提供所需 public API 的 AGP；不要绕过 probe 或改用 AGP 私有类。
-- **所有权或 WebP include 无匹配**：检查模块相对 glob、自定义 source set/res root 和生产文件是否真实存在；没有可处理 WebP 时移除 include，保持默认关闭。
+- **所有权或图片 include 无匹配**：检查格式、模块相对 glob、自定义 source set/res root 和生产文件是否真实存在；没有可处理图片时移除 include，保持默认关闭。
+- **图片 coverage 不足**：检查报告中的格式覆盖率、最近语料 pHash 距离和排除原因；不要降低 SSIM/pHash 门槛或强制改写失败关闭的资源。
+- **Bundle 元数据配置失败**：`dependencyMetadata` 只接受 `PRESERVE`/`OMIT`，结构条目数只能是 `0..64`；不要用它们伪造依赖坐标或写入运行时模块路径。
 - **未解析反射/Gson/JNI/JavaScript**：修复为可解析常量、添加精确外部契约规则，或把确实不归应用所有的包排除；不要把 fail-closed 改成猜测重命名。
 - **mapping continuity/Retrace 失败**：保留失败报告和 `.hardening/mappings`，检查 R8 版本、旧 mapping、配置身份和隔离目录；不要手工覆盖 current/history。
 - **baseline 缺失或身份不符**：在已审阅普通/Hardening 输入上重新明确捕获 baseline；不能复制别的项目/Variant baseline。

@@ -3,6 +3,7 @@ package com.holin.android.hardening.resources
 import com.android.aapt.Resources
 import com.google.protobuf.InvalidProtocolBufferException
 import com.holin.android.hardening.HardeningOwnership
+import com.holin.android.hardening.ImageFormat
 import com.holin.android.hardening.inventory.GitIgnoreMatcher
 import java.nio.file.Files
 import java.nio.file.LinkOption.NOFOLLOW_LINKS
@@ -17,6 +18,8 @@ data class OwnedResourceSourceName(
     val webpDiversificationEnabled: Boolean = false,
     val qualifier: String = "",
     val sourcePriority: Int = Int.MAX_VALUE,
+    val imageFormat: ImageFormat? = null,
+    val imageDiversificationEnabled: Boolean = false,
 )
 
 /** Proves resource provenance from production source before joining it to the merged AAPT2 table. */
@@ -53,6 +56,12 @@ class OwnedResourceInventoryBuilder(
         ownership.requireMatchedWebpIncludes(
             selected.asSequence()
                 .filter { it.source.fileName.toString().endsWith(".webp", true) }
+                .groupBy(OwnedResourceSourceName::module)
+                .mapValues { (_, names) -> names.mapTo(linkedSetOf(), OwnedResourceSourceName::moduleRelativePath) },
+        )
+        ownership.requireMatchedImageIncludes(
+            selected.asSequence()
+                .filter { it.imageFormat != null }
                 .groupBy(OwnedResourceSourceName::module)
                 .mapValues { (_, names) -> names.mapTo(linkedSetOf(), OwnedResourceSourceName::moduleRelativePath) },
         )
@@ -130,6 +139,9 @@ class OwnedResourceInventoryBuilder(
                                 type == ResourceType.DRAWABLE && tableEntry.name == "icon_notification",
                                 false,
                                 qualifiedSource.webpDiversificationEnabled,
+                                qualifiedSource.imageFormat,
+                                qualifiedSource.source,
+                                qualifiedSource.imageDiversificationEnabled,
                             )
                         }
                     }
@@ -150,7 +162,10 @@ class OwnedResourceInventoryBuilder(
                 Files.walk(resourceRoot).use { paths ->
                     paths.sorted().toList().also { walked ->
                         walked.forEach { path -> requireNoSymbolicLinks(path, "resource path") }
-                    }.asSequence().filter { path -> Files.isRegularFile(path, NOFOLLOW_LINKS) }.forEach { source ->
+                    }.asSequence()
+                        .filter { path -> !isGeneratedOrTestPath(moduleDirectory.relativize(path)) }
+                        .filter { path -> Files.isRegularFile(path, NOFOLLOW_LINKS) }
+                        .forEach { source ->
                         val directory = resourceRoot.relativize(source).firstOrNull()?.toString().orEmpty()
                         val moduleRelativePath = portable(moduleDirectory.relativize(source))
                         add(ResourceCandidate(module, source, directory, sourcePriority, moduleRelativePath))
@@ -223,6 +238,10 @@ class OwnedResourceInventoryBuilder(
                 ownership.isWebpIncluded(candidate.module, candidate.moduleRelativePath),
                 candidate.directory.substringAfter('-', ""),
                 candidate.sourcePriority,
+                imageFormat(candidate.source),
+                imageFormat(candidate.source)?.let {
+                    ownership.isImageIncluded(candidate.module, candidate.moduleRelativePath, it)
+                } == true,
             ),
         )
     }
@@ -236,6 +255,21 @@ class OwnedResourceInventoryBuilder(
     )
 
     private fun portable(path: Path): String = path.toString().replace('\\', '/')
+
+    private fun imageFormat(path: Path): ImageFormat? = when {
+        path.fileName.toString().endsWith(".png", true) -> ImageFormat.PNG
+        path.fileName.toString().endsWith(".webp", true) -> ImageFormat.WEBP
+        path.fileName.toString().endsWith(".jpg", true) || path.fileName.toString().endsWith(".jpeg", true) -> ImageFormat.JPEG
+        else -> null
+    }
+
+    private fun isGeneratedOrTestPath(relative: Path): Boolean = relative.any { component ->
+        component.toString()
+            .replace(Regex("(?<=[a-z0-9])(?=[A-Z])"), " ")
+            .lowercase()
+            .split(Regex("[^a-z0-9]+"))
+            .any { it == "build" || it == "generated" || it == "test" }
+    }
 
     companion object {
         private val FILE_NAME = Regex("[a-z][a-z0-9_]*")

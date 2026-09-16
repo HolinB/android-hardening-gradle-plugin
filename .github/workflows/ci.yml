@@ -32,8 +32,8 @@ jobs:
       - name: Build first portable publication
         run: |
           ./gradlew --no-daemon --rerun-tasks packagePortableHardeningPlugin verifyPortableHardeningPlugin
-          cp build/distributions/hardening-gradle-plugin-1.2.0-portable-maven.zip "$RUNNER_TEMP/portable-first.zip"
+          cp build/distributions/hardening-gradle-plugin-1.3.0-portable-maven.zip "$RUNNER_TEMP/portable-first.zip"
       - name: Rebuild and compare portable publication
         run: |
           ./gradlew --no-daemon --rerun-tasks packagePortableHardeningPlugin verifyPortableHardeningPlugin
-          cmp --silent "$RUNNER_TEMP/portable-first.zip" build/distributions/hardening-gradle-plugin-1.2.0-portable-maven.zip
+          cmp --silent "$RUNNER_TEMP/portable-first.zip" build/distributions/hardening-gradle-plugin-1.3.0-portable-maven.zip
