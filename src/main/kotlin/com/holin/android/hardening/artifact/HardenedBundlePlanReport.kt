@@ -1,5 +1,6 @@
 package com.holin.android.hardening.artifact
 
+import com.holin.android.hardening.resources.BitmapMode
 import com.holin.android.hardening.resources.ImageIneligibilityReason
 import com.holin.android.hardening.resources.ImageTransformStatus
 import com.holin.android.hardening.resources.ResourceType
@@ -22,7 +23,8 @@ data class HardenedBundlePlanReport(
     val bundle: PlannedBundleMetadataSummary = PlannedBundleMetadataSummary(),
 ) {
     init {
-        require(schemaVersion in 1..2) { "unsupported bundle hardening plan schema $schemaVersion" }
+        require(schemaVersion in 1..3) { "unsupported bundle hardening plan schema $schemaVersion" }
+        require(schemaVersion >= 3 || resources.bitmapMode == BitmapMode.LEGACY_PERCEPTUAL)
         requireSha256(sourceAabSha256, "sourceAabSha256")
         requireSha256(contentSaltSha256, "contentSaltSha256")
         require(namespace.isNotBlank()) { "namespace must not be blank" }
@@ -270,6 +272,7 @@ data class PlannedResourceSummary(
     val transformedJpegCount: Int = 0,
     val corpusImageCount: Int = 0,
     val imageFormatCoverage: List<PlannedImageFormatCoverage> = emptyList(),
+    val bitmapMode: BitmapMode = BitmapMode.LEGACY_PERCEPTUAL,
 ) {
     init {
         require(inventoryVariantCount > 0) { "owned resource inventory must not be empty" }
@@ -286,7 +289,14 @@ data class PlannedResourceSummary(
         require(minimumImageSsim.isFinite() && minimumImageSsim in 0.995..1.0) {
             "minimumImageSsim must be in 0.995..1.0"
         }
-        require(minimumImagePHashDistance in 11..64) { "minimumImagePHashDistance must be in 11..64" }
+        if (bitmapMode == BitmapMode.PIXEL_EXACT) {
+            require(minimumImagePHashDistance == 0 && minimumImageSsim == 1.0)
+            require(images.filter { it.status == ImageTransformStatus.TRANSFORMED }.all {
+                !it.dimensionChanged && it.ssim == 1.0 && it.pHashDistance == 0 && it.alphaPreserved == true
+            })
+        } else {
+            require(minimumImagePHashDistance in 11..64) { "minimumImagePHashDistance must be in 11..64" }
+        }
         require(eligibleImageCount == images.count { it.status != ImageTransformStatus.EXCLUDED }) {
             "eligible image accounting is inconsistent"
         }
@@ -576,6 +586,7 @@ object HardenedBundlePlanReportCodec {
         append(",\"minimumImageCoverage\":").append(resources.minimumImageCoverage)
         append(",\"minimumImageSsim\":").append(resources.minimumImageSsim)
         append(",\"minimumImagePHashDistance\":").append(resources.minimumImagePHashDistance)
+        if (schemaVersion >= 3) append(",\"bitmapMode\":").append(json(resources.bitmapMode.name))
         append(",\"eligibleImageCount\":").append(resources.eligibleImageCount)
         append(",\"transformedImageCount\":").append(resources.transformedImageCount)
         append(",\"imageCoverage\":").append(resources.imageCoverage)
@@ -754,7 +765,7 @@ object HardenedBundlePlanReportCodec {
         } else {
             emptySet()
         }
-        value.exactKeys(RESOURCE_KEYS, optional, "resources")
+        value.exactKeys(RESOURCE_KEYS, optional + if (schemaVersion < 3) setOf("bitmapMode") else emptySet(), "resources")
         return PlannedResourceSummary(
             value.planInt("inventoryVariantCount"),
             value.planInt("renamedResourceCount"),
@@ -780,6 +791,7 @@ object HardenedBundlePlanReportCodec {
             value.planListOrEmpty("imageFormatCoverage").mapIndexed { index, item ->
                 decodeFormatCoverage(item, index)
             },
+            if (schemaVersion >= 3) BitmapMode.valueOf(value.planString("bitmapMode")) else BitmapMode.LEGACY_PERCEPTUAL,
         )
     }
 
@@ -905,7 +917,7 @@ object HardenedBundlePlanReportCodec {
         "eligibleImageCount", "transformedImageCount", "imageCoverage", "eligibleImageBytes",
         "transformedImageBytes", "imageByteCoverage", "transformedPngCount", "transformedWebpCount",
         "transformedJpegCount",
-        "corpusImageCount", "imageFormatCoverage",
+        "corpusImageCount", "imageFormatCoverage", "bitmapMode",
         "diversifiedProtoXmlCount",
         "renames", "images",
     )

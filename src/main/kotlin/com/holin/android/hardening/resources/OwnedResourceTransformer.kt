@@ -281,7 +281,7 @@ class OwnedResourceTransformer(
     }
 
     private fun hasSupportedRepresentation(entry: ResourceInventoryEntry, lowerPath: String?): Boolean = when (entry.type) {
-        ResourceType.STYLE -> lowerPath == null && entry.bytes == null
+        ResourceType.STYLE, ResourceType.STRING, ResourceType.COLOR, ResourceType.DIMEN -> lowerPath == null && entry.bytes == null
         ResourceType.LAYOUT,
         ResourceType.ANIM,
         ResourceType.ANIMATOR,

@@ -87,6 +87,7 @@ class BundlePostRewriteSemanticVerifier {
         plan: HardenedBundlePlanReport,
         contentSalt: ByteArray,
         dexScope: DexSemanticVerificationScope,
+        runtimeScope: com.holin.android.hardening.runtime.RuntimeVerificationScope? = null,
     ): List<BundleSemanticVerificationResult> {
         require(contentSalt.isNotEmpty()) { "semantic verification content salt must not be empty" }
         val contentSaltSha256 = Sha256.hex(contentSalt)
@@ -127,11 +128,17 @@ class BundlePostRewriteSemanticVerifier {
                         contentSalt,
                         dexScope,
                     )
+                    BundleSemanticVerifier.NATIVE_LOAD_EQUIVALENCE -> com.holin.android.hardening.nativecode.NativeFormatProtection.verify(oldPath, newPath, before, after, contentSalt)
+                    BundleSemanticVerifier.ASSET_RUNTIME_EQUIVALENCE -> com.holin.android.hardening.runtime.RuntimeAssetContainers.verify(
+                        oldPath, newPath, before, after, requireNotNull(runtimeScope), contentSalt)
+                    BundleSemanticVerifier.ASSET_FORMAT_EQUIVALENCE -> com.holin.android.hardening.resources.ControlledAssets.verify(oldPath, newPath, before, after, contentSalt)
                     BundleSemanticVerifier.RESOURCE_SEMANTICS -> verifyResource(
                         oldPath,
                         newPath,
                         before,
-                        after,
+                        if (oldPath == RESOURCES_PB_PATH && runtimeScope != null)
+                            com.holin.android.hardening.runtime.RuntimeStringResources.normalize(after, runtimeScope.stringIds, runtimeScope.key)
+                        else after,
                         manifest,
                         plan.resources,
                         contentSalt,
@@ -734,6 +741,12 @@ class BundlePostRewriteSemanticVerifier {
         }
         require(planned.originalSha256 == Sha256.hex(before) && planned.transformedSha256 == Sha256.hex(after)) {
             "transformed image hashes do not match the transformation report for $oldPath"
+        }
+        if (resources.bitmapMode == com.holin.android.hardening.resources.BitmapMode.PIXEL_EXACT) {
+            require(!planned.dimensionChanged && planned.ssim == 1.0 && planned.pHashDistance == 0 && planned.alphaPreserved == true)
+            val verified = com.holin.android.hardening.resources.PixelPreservingImageTransformer.verify(before, after, oldPath)
+            require(planned.width == verified.width && planned.height == verified.height)
+            return
         }
         if (planned.dimensionChanged) {
             val original = ImageIO.read(ByteArrayInputStream(before))

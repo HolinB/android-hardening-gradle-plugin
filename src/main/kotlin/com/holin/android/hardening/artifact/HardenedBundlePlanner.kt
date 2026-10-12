@@ -15,6 +15,8 @@ import com.holin.android.hardening.inventory.OwnedDexDescriptorProof
 import com.holin.android.hardening.inventory.OwnedDexInventoryBuilder
 import com.holin.android.hardening.naming.PseudowordRegistry
 import com.holin.android.hardening.naming.RegistrySnapshot
+import com.holin.android.hardening.resources.BitmapMode
+import com.holin.android.hardening.resources.PixelPreservingImageTransformer
 import com.holin.android.hardening.resources.ImageTransformStatus
 import com.holin.android.hardening.resources.ImageIneligibilityReason
 import com.holin.android.hardening.resources.OrdinaryImageCorpus
@@ -62,6 +64,12 @@ data class HardenedBundlePlanRequest(
     val fixedSeedHash: String? = null,
     val dependencyMetadata: DependencyMetadataMode = DependencyMetadataMode.PRESERVE,
     val structuralMetadataEntryCount: Int = 0,
+    val valueResourcePolicy: com.holin.android.hardening.resources.ValueResourcePolicy = com.holin.android.hardening.resources.ValueResourcePolicy(),
+    val bitmapMode: BitmapMode = BitmapMode.LEGACY_PERCEPTUAL,
+    val assetPolicy: com.holin.android.hardening.resources.AssetPolicy = com.holin.android.hardening.resources.AssetPolicy(),
+    val runtimeClosure: com.holin.android.hardening.runtime.RuntimeClosure? = null,
+    val nativePolicy: com.holin.android.hardening.nativecode.NativePolicy = com.holin.android.hardening.nativecode.NativePolicy(),
+    val preR8Relocations: Map<String, String> = emptyMap(),
 ) {
     init {
         require(fixedSeedProvided == (fixedSeedHash != null)) {
@@ -82,6 +90,8 @@ data class HardenedBundlePlan(
     val ownedArtifactInventory: OwnedArtifactInventory,
     val ownedArtifactAnalysisInventory: OwnedArtifactInventory,
     val dexVerificationScope: DexSemanticVerificationScope,
+    val controlledTransformations: Map<String, Any> = emptyMap(),
+    val runtimeVerificationScope: com.holin.android.hardening.runtime.RuntimeVerificationScope? = null,
 )
 
 /**
@@ -158,10 +168,15 @@ class HardenedBundlePlanner(
         val resourceInventory = OwnedResourceInventoryBuilder(
             repository,
             request.ownership,
-            externallyNamedResources = externallyNamedResources,
+            com.holin.android.hardening.inventory.GitIgnoreMatcher(repository),
+            externallyNamedResources,
+            request.valueResourcePolicy.enabled || request.runtimeClosure?.strings?.isNotEmpty() == true,
         )
             .build(resourcesPb, entries)
-        val allocatableInventory = resourceInventory.filterNot { it.externallyNamed }
+        val valueDecision = request.valueResourcePolicy.select(resourceInventory, entries)
+        val allocatableInventory = resourceInventory.filterNot {
+            it.externallyNamed || (it.type.isValue && it.resourceId !in valueDecision.eligibleIds)
+        }
         val renameableInventory = allocatableInventory.filterNot { it.notificationIcon }
         require(renameableInventory.isNotEmpty()) {
             "owned resource inventory has no renameable hardening resource"
@@ -178,7 +193,23 @@ class HardenedBundlePlanner(
         }) {
             "$NOTIFICATION_ICON must retain its logical name and receive physical path replacements when present"
         }
-        val tableResult = resourceTableTransformer.transform(resourcesPb, allocation.report)
+        val runtimeClosure = request.runtimeClosure
+        val runtimeKey = com.holin.android.hardening.runtime.RuntimeEnvelope.key(lineageSeed)
+        if (runtimeClosure != null && (runtimeClosure.strings.isNotEmpty() || runtimeClosure.assets.isNotEmpty())) {
+            require(runtimeClosure.helper == com.holin.android.hardening.runtime.RuntimeEnvelope.helper(lineageSeed)) { "runtime closure belongs to another lineage" }
+            require(entries.filterKeys { it.endsWith(".dex") }.values.any { dex ->
+                com.android.tools.smali.dexlib2.dexbacked.DexBackedDexFile.fromInputStream(null, dex.inputStream())
+                    .classes.any { it.type == "L${runtimeClosure.helper};" }
+            }) { "runtime adapter was removed or renamed by R8" }
+        }
+        val runtimeStrings = runtimeClosure?.let { closure ->
+            val provenNames = resourceInventory.filter { it.type == com.holin.android.hardening.resources.ResourceType.STRING &&
+                it.origin == com.holin.android.hardening.resources.ResourceOrigin.OWNED }.mapTo(linkedSetOf()) { it.name }
+            com.holin.android.hardening.runtime.RuntimeStringResources.transform(resourcesPb,
+                com.holin.android.hardening.runtime.RuntimeStringScope(closure.strings.intersect(provenNames), runtimeKey,
+                    closure.policy.minimumStringCoverage, closure.policy.strings.size), contentSalt, entries)
+        }
+        val tableResult = resourceTableTransformer.transform(runtimeStrings?.table ?: resourcesPb, allocation.report)
         require(!tableResult.resourcesPb.contentEquals(resourcesPb)) {
             "resource hardening did not change resources.pb"
         }
@@ -190,9 +221,17 @@ class HardenedBundlePlanner(
             request.minimumImageCoverage,
             request.minimumImageSsim,
             request.minimumImagePHashDistance,
+            request.bitmapMode,
         )
 
-        val replacements = (dexPlan.replacements + resourcePlan.replacements)
+        val assetPlan = com.holin.android.hardening.resources.ControlledAssets.plan(repository, request.ownership, entries, request.assetPolicy, contentSalt)
+        val containerReplacements = runtimeClosure?.let { closure ->
+            com.holin.android.hardening.runtime.RuntimeAssetContainers.transform(entries, assetPlan.replacements, closure, runtimeKey)
+        }.orEmpty()
+        val nativePlan = com.holin.android.hardening.nativecode.NativeFormatProtection.plan(entries, request.nativePolicy, contentSalt)
+        MappingMetadataEquivalence.verifyCanonical(entries, request.preR8Relocations, request.r8MappingText)
+        val containerPaths = containerReplacements.mapTo(hashSetOf()) { it.oldPath }
+        val replacements = (dexPlan.replacements + resourcePlan.replacements + assetPlan.replacements.filterNot { it.oldPath in containerPaths } + containerReplacements + nativePlan.replacements)
             .sortedBy(BundleEntryReplacement::oldPath)
         validateReplacementClosure(entries.keys, replacements)
         val bundleReport = PlannedBundleMetadataSummary(
@@ -206,7 +245,7 @@ class HardenedBundlePlanner(
             additions.size,
             additions.map(BundleEntryAddition::path),
         )
-        val reportSchemaVersion = if (
+        val reportSchemaVersion = if (request.bitmapMode == BitmapMode.PIXEL_EXACT) 3 else if (
             request.dependencyMetadata != DependencyMetadataMode.PRESERVE ||
             request.structuralMetadataEntryCount > 0 ||
             resourcePlan.report.corpusImageCount > 0
@@ -255,6 +294,11 @@ class HardenedBundlePlanner(
                 emptySet(),
                 dexInventory.accessCompatibilityDexDescriptors,
             ),
+            mapOf("schemaVersion" to 1, "valueResources" to valueDecision.report, "assets" to assetPlan.report, "nativeLibraries" to nativePlan.report,
+                "runtimeStrings" to (runtimeStrings?.report ?: mapOf("enabled" to false)),
+                "runtimeAssets" to mapOf("selected" to (runtimeClosure?.policy?.assetPaths?.size ?: 0), "transformed" to containerReplacements.size,
+                    "entries" to containerReplacements.map { mapOf("original" to it.oldPath, "output" to it.newPath, "outputSha256" to Sha256.hex(it.bytes)) })),
+            runtimeClosure?.let { com.holin.android.hardening.runtime.RuntimeVerificationScope(runtimeStrings?.ids.orEmpty(), it.assets.keys, runtimeKey) },
         )
     }
 
@@ -508,16 +552,17 @@ class HardenedBundlePlanner(
         minimumImageCoverage: Double,
         minimumImageSsim: Double,
         minimumImagePHashDistance: Int,
+        bitmapMode: BitmapMode,
     ): ResourcePlan {
-        val ordinaryImageCorpus = OrdinaryImageCorpus.fromAabEntries(entries)
-        val pngDiversifier = PngDiversifier(minimumImageSsim, minimumImagePHashDistance, ordinaryImageCorpus)
-        val webpDiversifier = WebpDiversifier(
+        val ordinaryImageCorpus = if (bitmapMode == BitmapMode.PIXEL_EXACT) OrdinaryImageCorpus.empty() else OrdinaryImageCorpus.fromAabEntries(entries)
+        val pngDiversifier by lazy { PngDiversifier(minimumImageSsim, minimumImagePHashDistance, ordinaryImageCorpus) }
+        val webpDiversifier by lazy { WebpDiversifier(
             minimumImageSsim,
             minimumImagePHashDistance,
             WebpDiversifier.HARD_MAXIMUM_BYTE_GROWTH_RATIO,
             WebpEncodingPolicy.GLOBAL_AAB_BUDGET,
             ordinaryImageCorpus,
-        )
+        ) }
         val imageResults = linkedMapOf<String, DiversifiedImage>()
         inventory.asSequence()
             .filter {
@@ -538,6 +583,7 @@ class HardenedBundlePlanner(
                 val originalHash = Sha256.hex(requireNotNull(resource.bytes))
                 val lowerPath = oldPath.lowercase()
                 val diversification = when {
+                    bitmapMode == BitmapMode.PIXEL_EXACT -> pixelExact(resource, contentSalt)
                     lowerPath.endsWith(".webp") -> webpDiversifier.diversify(resource, contentSalt).let {
                         ImageDiversification(
                             it.status,
@@ -757,8 +803,28 @@ class HardenedBundlePlanner(
                         )
                     }
                 },
+                bitmapMode,
             ),
         )
+    }
+
+    private fun pixelExact(resource: ResourceInventoryEntry, salt: ByteArray): ImageDiversification {
+        val path = requireNotNull(resource.aabPath)
+        val reason = when {
+            !resource.imageDiversificationEnabled -> ImageIneligibilityReason.OUTSIDE_CONFIGURED_IMAGE_SCOPE
+            resource.externallyNamed -> ImageIneligibilityReason.EXTERNALLY_NAMED
+            resource.notificationIcon -> ImageIneligibilityReason.NOTIFICATION_ICON
+            resource.animation -> ImageIneligibilityReason.ANIMATION
+            path.endsWith(".9.png", true) -> ImageIneligibilityReason.NINE_PATCH
+            else -> null
+        }
+        if (reason != null) return ImageDiversification(ImageTransformStatus.EXCLUDED, reason, null, null, null, null, null, null, null)
+        val bytes = requireNotNull(resource.bytes)
+        val transformed = runCatching { PixelPreservingImageTransformer.transformWithVerification(bytes, path, salt) }.getOrNull()
+            ?: return ImageDiversification(ImageTransformStatus.INELIGIBLE, ImageIneligibilityReason.UNSUPPORTED_FORMAT, null, null, null, null, null, null, null)
+        val verified = transformed.second
+        return ImageDiversification(ImageTransformStatus.TRANSFORMED, ImageIneligibilityReason.TRANSFORMED,
+            transformed.first, verified.width, verified.height, true, 1.0, 0, 0)
     }
 
     private fun validateRequest(request: HardenedBundlePlanRequest) {
@@ -789,8 +855,10 @@ class HardenedBundlePlanner(
         require(request.minimumImageSsim.isFinite() && request.minimumImageSsim in 0.995..1.0) {
             "minimum image SSIM must be in 0.995..1.0"
         }
-        require(request.minimumImagePHashDistance in 11..64) {
-            "minimum image pHash distance must be in 11..64"
+        if (request.bitmapMode == BitmapMode.PIXEL_EXACT) {
+            require(request.minimumImagePHashDistance == 0 && request.minimumImageSsim == 1.0)
+        } else {
+            require(request.minimumImagePHashDistance in 11..64)
         }
         require(request.structuralMetadataEntryCount in 0..64) {
             "structural metadata entry count must be in 0..64"

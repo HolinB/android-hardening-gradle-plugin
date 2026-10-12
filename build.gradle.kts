@@ -90,7 +90,7 @@ fun normalizedConcreteDependencyClosure(
 }
 
 group = "com.holin.android.hardening"
-version = "1.3.0"
+version = "1.4.1"
 
 base {
     archivesName.set("hardening-gradle-plugin")
@@ -135,6 +135,7 @@ dependencies {
     implementation("org.ow2.asm:asm:9.8")
     implementation("org.ow2.asm:asm-commons:9.8")
     implementation("org.ow2.asm:asm-tree:9.8")
+    implementation("org.ow2.asm:asm-analysis:9.8")
 
     testImplementation(gradleTestKit())
     // The real-AGP TestKit fixture runs offline against this build's shared cache.

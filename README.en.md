@@ -1,6 +1,6 @@
-# Android Hardening Gradle Plugin 1.3.0
+# Android Hardening Gradle Plugin 1.4.1
 
-[Chinese](README.md) | [1.3.0 changelog](CHANGELOG.md)
+[Chinese](README.md) | [1.4.1 changelog](CHANGELOG.md) | [Controlled transformations](docs/controlled-transformations.md)
 
 `com.holin.android.hardening` is a local binary Gradle plugin for Android application variants. Within explicitly
 selected variants and explicitly declared code/resource ownership, it reuses R8 mappings, assigns stable owned names,
@@ -39,15 +39,15 @@ Obtain the ZIP and published SHA-256 from the same Release. Verify the outer arc
 name alone.
 
 ```shell
-shasum -a 256 -c hardening-gradle-plugin-1.3.0-portable-maven.zip.sha256
-mkdir -p .local/hardening-1.3.0
-unzip -q hardening-gradle-plugin-1.3.0-portable-maven.zip -d .local/hardening-1.3.0
-(cd .local/hardening-1.3.0 && shasum -a 256 -c SHA256SUMS)
+shasum -a 256 -c hardening-gradle-plugin-1.4.1-portable-maven.zip.sha256
+mkdir -p .local/hardening-1.4.1
+unzip -q hardening-gradle-plugin-1.4.1-portable-maven.zip -d .local/hardening-1.4.1
+(cd .local/hardening-1.4.1 && shasum -a 256 -c SHA256SUMS)
 ```
 
-On Linux, use `sha256sum -c hardening-gradle-plugin-1.3.0-portable-maven.zip.sha256` for the outer ZIP and
+On Linux, use `sha256sum -c hardening-gradle-plugin-1.4.1-portable-maven.zip.sha256` for the outer ZIP and
 `sha256sum -c SHA256SUMS` for the extracted content. In PowerShell, compare
-`Get-FileHash .\hardening-gradle-plugin-1.3.0-portable-maven.zip -Algorithm SHA256` with the Release value. When Gradle
+`Get-FileHash .\hardening-gradle-plugin-1.4.1-portable-maven.zip -Algorithm SHA256` with the Release value. When Gradle
 dependency verification is enabled, review and place the ZIP's `verification-metadata.xml` at
 `gradle/verification-metadata.xml` in the consumer.
 
@@ -65,9 +65,9 @@ install/run an app, or notify another system. After local review and explicit au
 manual command run outside Actions:
 
 ```shell
-gh release upload v1.3.0 \
-  build/distributions/hardening-gradle-plugin-1.3.0-portable-maven.zip \
-  build/distributions/hardening-gradle-plugin-1.3.0-portable-maven.zip.sha256
+gh release upload v1.4.1 \
+  build/distributions/hardening-gradle-plugin-1.4.1-portable-maven.zip \
+  build/distributions/hardening-gradle-plugin-1.4.1-portable-maven.zip.sha256
 ```
 
 ## The `hardeningw` launcher
@@ -75,27 +75,27 @@ gh release upload v1.3.0 \
 The launcher requires `--project-dir`, a `--` separator, and at least one argument for the consumer Wrapper. It validates
 JDK/Wrapper/SDK prerequisites, downloads and checks the ZIP against the pinned Release SHA-256 and internal
 `SHA256SUMS`, atomically installs a versioned cache, and injects
-`-PhardeningPluginRepo=<cache>/1.3.0/repository`. When download is unavailable and it runs from this source repository,
+`-PhardeningPluginRepo=<cache>/1.4.1/repository`. When download is unavailable and it runs from this source repository,
 it can fall back to the local `packagePortableHardeningPlugin` task.
 
 POSIX:
 
 ```shell
 ./hardeningw --project-dir ./consumer -- \
-  -PandroidHardening=true :mobile:hardeningBundleDemoQa
+  :mobile:bundleDemoQaHardening
 ```
 
 PowerShell:
 
 ```powershell
 .\hardeningw.ps1 --project-dir .\consumer -- `
-  -PandroidHardening=true :mobile:hardeningBundleDemoQa
+  :mobile:bundleDemoQaHardening
 ```
 
 Batch:
 
 ```bat
-hardeningw.bat --project-dir .\consumer -- -PandroidHardening=true :mobile:hardeningBundleDemoQa
+hardeningw.bat --project-dir .\consumer -- :mobile:bundleDemoQaHardening
 ```
 
 Use `./hardeningw --version` to print the launcher version. Set `HARDENING_CACHE_HOME` only when a non-default cache is
@@ -137,7 +137,7 @@ pluginManagement {
 plugins {
     id("com.android.application") version "8.13.2" apply false
     id("org.jetbrains.kotlin.android") version "2.3.0" apply false
-    id("com.holin.android.hardening") version "1.3.0" apply false
+    id("com.holin.android.hardening") version "1.4.1" apply false
 }
 ```
 
@@ -153,8 +153,8 @@ plugins {
 Direct invocation:
 
 ```shell
-./gradlew -PhardeningPluginRepo=.local/hardening-1.3.0/repository \
-  -PandroidHardening=true :mobile:hardeningBundleDemoQa
+./gradlew -PhardeningPluginRepo=.local/hardening-1.4.1/repository \
+  :mobile:bundleDemoQaHardening
 ```
 
 For a real consumer, first provide production sources, variant signing, and an actually applied legacy plugin, then
@@ -162,18 +162,18 @@ review and capture a genuine legacy-plugin baseline. The neutral `com.example.le
 used for a production build. Run these commands separately so ordinary and hardened artifacts are not conflated:
 
 ```shell
-./gradlew -PhardeningPluginRepo=.local/hardening-1.3.0/repository \
+./gradlew -PhardeningPluginRepo=.local/hardening-1.4.1/repository \
   -PandroidHardening=false :mobile:bundleDemoQa
-./gradlew -PhardeningPluginRepo=.local/hardening-1.3.0/repository \
-  -PandroidHardening=true :mobile:hardeningBundleDemoQa
-./gradlew -PhardeningPluginRepo=.local/hardening-1.3.0/repository \
+./gradlew -PhardeningPluginRepo=.local/hardening-1.4.1/repository \
+  :mobile:bundleDemoQaHardening
+./gradlew -PhardeningPluginRepo=.local/hardening-1.4.1/repository \
   -PandroidHardening=true :mobile:captureHardeningBaselineDemoQa
-./gradlew -PhardeningPluginRepo=.local/hardening-1.3.0/repository \
+./gradlew -PhardeningPluginRepo=.local/hardening-1.4.1/repository \
   -PandroidHardening=true :mobile:compareHardeningDemoQa
 ```
 
 Review the first build's mapping, signing, and reports before capturing an immutable baseline; explicitly recapture
-after configuration identity changes. Run `:mobile:hardeningAssembleDemoQa` separately for the APK. Only
+after configuration identity changes. Run `:mobile:assembleDemoQaHardening` separately for the APK. Only
 `hardeningRunDemoQa` installs or launches on a device, and it was not run for this Release.
 
 ## Full `androidHardening` Kotlin DSL
@@ -356,12 +356,13 @@ opening the scope.
 Image rewriting is default-off: both `images.formats(...)` and at least one `include(...)` must be explicit, and a
 candidate must belong to the declared owned production resources. `PNG`, `WEBP`, and `JPEG` are valid formats, and
 exclusion wins over inclusion. The legacy `webp { ... }` block is merged into the WebP scope for 1.2.0 configuration
-compatibility. The 1.3.0 final-AAB pixel transformers cover PNG/WebP. JPEG can enter ownership and reporting, but without
-an equivalently verified safe transform it fails closed as `UNSUPPORTED_FORMAT` and participates in the coverage gate
-instead of being rewritten forcibly.
+compatibility. The default `LEGACY_PERCEPTUAL` mode retains the existing PNG/WebP policy. The new `PIXEL_EXACT` mode
+supports format conversions for PNG/WebP/JPEG with identical dimensions, RGBA, rendering metadata and six background
+composites. Pixel pHash may remain identical. Unproven cases are preserved and reported.
 
 Dependency/generated resources, externally named resources, notification icons, animations, non-drawables, and
-NinePatch are not rewritten. Every transformed candidate must preserve dimensions and every alpha sample, pass the
+NinePatch are not rewritten. Every transformed candidate must preserve dimensions and every alpha sample. Legacy
+perceptual mode must also pass the
 SSIM and source-image pHash thresholds, and retain the configured minimum pHash distance from every decodable
 PNG/WebP/JPEG in the ordinary AAB. Reports include nearest-corpus distance, exclusion reason, and count/byte coverage by
 PNG/WebP/JPEG. Both aggregate count and byte coverage must satisfy
@@ -389,8 +390,16 @@ reflection or resource lookup. `preserveExactRules` is for reviewed rules that m
 
 Every `variants.include("...")` generates the same family. The task suffix for `demoQa` is `DemoQa`.
 
+Version 1.4.1 adds `assemble<Variant>Hardening` and `bundle<Variant>Hardening` to Android Studio's `other` group.
+Run them directly without an opt-in property. Each starts an isolated build from the project root, preserves the caller's
+`-P` properties, and overrides only `androidHardening=true`. APK and AAB entries delegate to the owning module's existing
+hardening tasks. The AAB entry does not generate an APK. Internal tasks remain in `hardening`.
+When upgrading, remove consumer-defined tasks with these names and use the plugin entries.
+
 | Phase | Task | With `androidHardening=false` | Purpose/boundary |
 |---|---|---|---|
+| Direct AAB entry | `bundleDemoQaHardening` | Enables hardening in an isolated build | Produces a signed, verified hardened AAB; grouped under `other` |
+| Direct APK entry | `assembleDemoQaHardening` | Enables hardening in an isolated build | Produces and verifies a signed universal APK; grouped under `other` |
 | Prepare | `prepareHardeningDemoQa` | Direct request fails with the opt-in command | Locks and prepares mapping, registry, seed, and configuration identity |
 | Audit | `auditHardeningDemoQa` | Direct request fails | Audits source, runtime dependencies, rules, external contracts, and legacy plugins |
 | Verify | `verifyHardeningDemoQa` | Direct request fails | Verifies AAB, R8 mapping continuity, Bean fields, and Retrace |
@@ -470,18 +479,18 @@ Prepare the versioned plugin cache and all consumer dependencies in a controlled
 
 ```shell
 ./hardeningw --project-dir ./consumer -- \
-  -PandroidHardening=true --offline :mobile:hardeningBundleDemoQa
+  --offline :mobile:bundleDemoQaHardening
 ```
 
 The portable ZIP excludes AGP/Kotlin, so extracting it alone does not make the whole consumer build offline. Repository
 maintainers can validate the checksum-pinned matrix with `prepareOfflineTestKitEnvironment`,
-`packageOfflineHardeningTestKit`, and `verifyOfflineHardeningTestKit`. The 1.3.0 GitHub Release does not attach the Offline
+`packageOfflineHardeningTestKit`, and `verifyOfflineHardeningTestKit`. The 1.4.1 GitHub Release does not attach the Offline
 TestKit. Consumers must prepare and verify their own Gradle/AGP/Kotlin/AAPT2 and application dependencies; do not let an
 offline run fall back to an unknown host cache or network.
 
 ## Troubleshooting
 
-- **Hardening disabled message:** pass exact `-PandroidHardening=true` and request `hardeningBundle<Variant>`, `hardeningAssemble<Variant>`, or `hardeningRun<Variant>`.
+- **Hardening disabled message:** build with `bundle<Variant>Hardening` or `assemble<Variant>Hardening` directly. The existing `hardeningBundle<Variant>`, `hardeningAssemble<Variant>`, and `hardeningRun<Variant>` still require exact `-PandroidHardening=true`.
 - **Plugin not found:** point `hardeningPluginRepo` at the extracted `repository`; ensure settings has no `includeBuild` or remote Hardening fallback.
 - **Toolchain capability unavailable:** move to an AGP exposing the required public API. Do not bypass the probe or use private AGP classes.
 - **Ownership/image include has no match:** check formats, module-relative globs, custom source-set/resource roots, and real production files. Remove the include to retain default-off when no image is eligible.

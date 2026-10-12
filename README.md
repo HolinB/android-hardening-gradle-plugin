@@ -1,6 +1,6 @@
-# Android Hardening Gradle Plugin 1.3.0
+# Android Hardening Gradle Plugin 1.4.1
 
-[English](README.en.md) | [1.3.0 更新日志](CHANGELOG.md)
+[English](README.en.md) | [1.4.1 更新日志](CHANGELOG.md) | [受控转换与适用性](docs/controlled-transformations.md)
 
 `com.holin.android.hardening` 是一个面向 Android Application Variant 的本地二进制 Gradle 插件。它在显式授权的
 Variant 和显式声明的代码/资源所有权范围内，复用 R8 映射、稳定化自有名称、审计外部契约、改写并重新签名 AAB，
@@ -35,15 +35,15 @@ Hardening 任务。
 先从同一 Release 获取 ZIP 和发布的 SHA-256，再进行解压。不要只相信文件名。
 
 ```shell
-shasum -a 256 -c hardening-gradle-plugin-1.3.0-portable-maven.zip.sha256
-mkdir -p .local/hardening-1.3.0
-unzip -q hardening-gradle-plugin-1.3.0-portable-maven.zip -d .local/hardening-1.3.0
-(cd .local/hardening-1.3.0 && shasum -a 256 -c SHA256SUMS)
+shasum -a 256 -c hardening-gradle-plugin-1.4.1-portable-maven.zip.sha256
+mkdir -p .local/hardening-1.4.1
+unzip -q hardening-gradle-plugin-1.4.1-portable-maven.zip -d .local/hardening-1.4.1
+(cd .local/hardening-1.4.1 && shasum -a 256 -c SHA256SUMS)
 ```
 
-Linux 可使用 `sha256sum -c hardening-gradle-plugin-1.3.0-portable-maven.zip.sha256` 校验外层 ZIP，并使用
+Linux 可使用 `sha256sum -c hardening-gradle-plugin-1.4.1-portable-maven.zip.sha256` 校验外层 ZIP，并使用
 `sha256sum -c SHA256SUMS` 校验解压内容。PowerShell 可用
-`Get-FileHash .\hardening-gradle-plugin-1.3.0-portable-maven.zip -Algorithm SHA256` 对照 Release 值。
+`Get-FileHash .\hardening-gradle-plugin-1.4.1-portable-maven.zip -Algorithm SHA256` 对照 Release 值。
 如启用 Gradle dependency verification，可审阅后把 ZIP 中的 `verification-metadata.xml` 放到消费项目的
 `gradle/verification-metadata.xml`。
 
@@ -59,36 +59,36 @@ Maven 仓库、不创建 Release/tag、不安装或运行 App，也不通知外�
 仍由 Actions 之外的本地手动命令执行：
 
 ```shell
-gh release upload v1.3.0 \
-  build/distributions/hardening-gradle-plugin-1.3.0-portable-maven.zip \
-  build/distributions/hardening-gradle-plugin-1.3.0-portable-maven.zip.sha256
+gh release upload v1.4.1 \
+  build/distributions/hardening-gradle-plugin-1.4.1-portable-maven.zip \
+  build/distributions/hardening-gradle-plugin-1.4.1-portable-maven.zip.sha256
 ```
 
 ## `hardeningw` 启动器
 
 启动器要求 `--project-dir`、`--` 分隔符和至少一个转发给消费项目 Wrapper 的参数。它校验 JDK/Wrapper/SDK，下载并按固定
 Release SHA-256 和内部 `SHA256SUMS` 验证 ZIP，原子写入版本缓存，再注入
-`-PhardeningPluginRepo=<cache>/1.3.0/repository`。下载不可用时，在插件源码目录运行还可回退到本地
+`-PhardeningPluginRepo=<cache>/1.4.1/repository`。下载不可用时，在插件源码目录运行还可回退到本地
 `packagePortableHardeningPlugin`。
 
 POSIX:
 
 ```shell
 ./hardeningw --project-dir ./consumer -- \
-  -PandroidHardening=true :mobile:hardeningBundleDemoQa
+  :mobile:bundleDemoQaHardening
 ```
 
 PowerShell:
 
 ```powershell
 .\hardeningw.ps1 --project-dir .\consumer -- `
-  -PandroidHardening=true :mobile:hardeningBundleDemoQa
+  :mobile:bundleDemoQaHardening
 ```
 
 Batch:
 
 ```bat
-hardeningw.bat --project-dir .\consumer -- -PandroidHardening=true :mobile:hardeningBundleDemoQa
+hardeningw.bat --project-dir .\consumer -- :mobile:bundleDemoQaHardening
 ```
 
 查询启动器版本：`./hardeningw --version`。自定义缓存只使用 `HARDENING_CACHE_HOME`；默认位于 Gradle 用户缓存下。
@@ -128,7 +128,7 @@ pluginManagement {
 plugins {
     id("com.android.application") version "8.13.2" apply false
     id("org.jetbrains.kotlin.android") version "2.3.0" apply false
-    id("com.holin.android.hardening") version "1.3.0" apply false
+    id("com.holin.android.hardening") version "1.4.1" apply false
 }
 ```
 
@@ -144,26 +144,26 @@ plugins {
 直接运行：
 
 ```shell
-./gradlew -PhardeningPluginRepo=.local/hardening-1.3.0/repository \
-  -PandroidHardening=true :mobile:hardeningBundleDemoQa
+./gradlew -PhardeningPluginRepo=.local/hardening-1.4.1/repository \
+  :mobile:bundleDemoQaHardening
 ```
 
 在真实项目中先配置生产源码、Variant 签名和已经应用的 legacy plugin，审阅并捕获真实 legacy plugin baseline；中性示例的
 `com.example.legacy` 只是占位，不能直接用于生产构建。以下命令分别调用，不把普通包和 Hardening 包混为一个构建结果：
 
 ```shell
-./gradlew -PhardeningPluginRepo=.local/hardening-1.3.0/repository \
+./gradlew -PhardeningPluginRepo=.local/hardening-1.4.1/repository \
   -PandroidHardening=false :mobile:bundleDemoQa
-./gradlew -PhardeningPluginRepo=.local/hardening-1.3.0/repository \
-  -PandroidHardening=true :mobile:hardeningBundleDemoQa
-./gradlew -PhardeningPluginRepo=.local/hardening-1.3.0/repository \
+./gradlew -PhardeningPluginRepo=.local/hardening-1.4.1/repository \
+  :mobile:bundleDemoQaHardening
+./gradlew -PhardeningPluginRepo=.local/hardening-1.4.1/repository \
   -PandroidHardening=true :mobile:captureHardeningBaselineDemoQa
-./gradlew -PhardeningPluginRepo=.local/hardening-1.3.0/repository \
+./gradlew -PhardeningPluginRepo=.local/hardening-1.4.1/repository \
   -PandroidHardening=true :mobile:compareHardeningDemoQa
 ```
 
 先审阅首次构建的 mapping、签名和报告，再捕获不可变 baseline；配置身份变化后需明确重新捕获。需 APK 时可单独运行
-`:mobile:hardeningAssembleDemoQa`；设备安装/启动只有 `hardeningRunDemoQa` 会执行，本 Release 验证未运行该任务。
+`:mobile:assembleDemoQaHardening`；设备安装/启动只有 `hardeningRunDemoQa` 会执行，本 Release 验证未运行该任务。
 
 ## 完整 `androidHardening` Kotlin DSL
 
@@ -341,11 +341,11 @@ androidHardening {
 
 图片改写默认关闭：`images.formats(...)` 和至少一个 `include(...)` 都必须显式声明，且候选必须属于声明的自有生产资源。
 `PNG`、`WEBP`、`JPEG` 是有效格式，排除优先于包含；旧 `webp { ... }` 会合并为 WebP 范围，保持 1.2.0 配置兼容。
-1.3.0 的最终 AAB 像素转换器覆盖 PNG/WebP。JPEG 可以进入所有权和报告范围，但没有通过同等验证的安全转换路径时会以
-`UNSUPPORTED_FORMAT` 失败关闭并参与覆盖率 gate，而不是强制改写。
+默认 `LEGACY_PERCEPTUAL` 保留旧 PNG/WebP 策略。新增 `PIXEL_EXACT` 支持 PNG/WebP/JPEG 的格式转换，
+要求尺寸、RGBA、渲染元数据和六种背景上的合成结果完全相同，不要求 pHash 变化。无法证明等价的对象保留并记录原因。
 
 依赖/生成资源、外部命名资源、通知图标、动画、非 drawable 和 NinePatch 不会改写。每个转换候选必须保持宽高和逐采样
-alpha，达到 SSIM 与源图 pHash 门槛，并且与普通 AAB 中任意可解码 PNG/WebP/JPEG 保持配置的最小 pHash 距离。报告记录
+alpha；旧感知模式还须达到 SSIM 与源图 pHash 门槛，并且与普通 AAB 中任意可解码 PNG/WebP/JPEG 保持配置的最小 pHash 距离。报告记录
 最近语料距离、排除原因以及 PNG/WebP/JPEG 分格式数量和字节覆盖率；总数量和总字节覆盖率都必须达到
 `resources.bitmapDiversification.minimumCoverage`。
 
@@ -367,8 +367,15 @@ R8 名称策略不会用“能编译”代替契约安全。审计会保留并�
 
 每个 `variants.include("...")` 都按同一规则生成任务；`demoQa` 的 task suffix 是 `DemoQa`。
 
+1.4.1 新增 `assemble<Variant>Hardening` 和 `bundle<Variant>Hardening`，可在 Android Studio 的 `other` 分组直接执行，
+无需手动传入加固开关。入口在项目根目录启动隔离构建，保留调用方的 `-P` 属性，并仅覆盖 `androidHardening=true`；
+APK 与 AAB 分别委托给当前模块的原有加固任务。AAB 入口不生成 APK。内部任务仍归属 `hardening`。
+升级时移除消费项目中同名的自定义入口，改为使用插件提供的任务。
+
 | 阶段 | 任务 | `androidHardening=false` | 作用/边界 |
 |---|---|---|---|
+| 直接 AAB 入口 | `bundleDemoQaHardening` | 隔离构建自动启用加固 | 产出已签名、已验证 hardened AAB；分组为 `other` |
+| 直接 APK 入口 | `assembleDemoQaHardening` | 隔离构建自动启用加固 | 产出并验证已签名 universal APK；分组为 `other` |
 | 准备 | `prepareHardeningDemoQa` | 直接调用失败并给出 opt-in | 锁定并准备映射、registry、seed 和配置身份 |
 | 审计 | `auditHardeningDemoQa` | 直接调用失败 | 审计源码、运行时依赖、规则、外部契约和旧插件 |
 | 验证 | `verifyHardeningDemoQa` | 直接调用失败 | 验证 AAB、R8 mapping continuity、Bean 字段与 Retrace |
@@ -437,17 +444,17 @@ APK/AAB 当作 Hardening 产物。插件也不会调用上传；上传必须在�
 
 ```shell
 ./hardeningw --project-dir ./consumer -- \
-  -PandroidHardening=true --offline :mobile:hardeningBundleDemoQa
+  --offline :mobile:bundleDemoQaHardening
 ```
 
 便携 ZIP 不包含 AGP/Kotlin，所以“已经解压 ZIP”不等于消费构建已完全离线。仓库维护者可使用
 `prepareOfflineTestKitEnvironment`、`packageOfflineHardeningTestKit` 和 `verifyOfflineHardeningTestKit` 验证完整、checksum 固定的
-离线矩阵。1.3.0 GitHub Release 不附带 Offline TestKit；消费方必须自行准备并校验 Gradle/AGP/Kotlin/AAPT2 与应用依赖，
+离线矩阵。1.4.1 GitHub Release 不附带 Offline TestKit；消费方必须自行准备并校验 Gradle/AGP/Kotlin/AAPT2 与应用依赖，
 不要让离线构建回退到未知宿主缓存或网络。
 
 ## 排障
 
-- **提示 Hardening disabled**：确认使用精确的 `-PandroidHardening=true`，并调用 `hardeningBundle<Variant>`、`hardeningAssemble<Variant>` 或 `hardeningRun<Variant>`。
+- **提示 Hardening disabled**：打包时直接调用 `bundle<Variant>Hardening` 或 `assemble<Variant>Hardening`。原有 `hardeningBundle<Variant>`、`hardeningAssemble<Variant>` 和 `hardeningRun<Variant>` 仍需精确传入 `-PandroidHardening=true`。
 - **找不到插件**：确认 `hardeningPluginRepo` 指向解压目录内的 `repository`，且 settings 没有 `includeBuild` 或远程 Hardening 仓库替代。
 - **工具链 capability 缺失**：升级到提供所需 public API 的 AGP；不要绕过 probe 或改用 AGP 私有类。
 - **所有权或图片 include 无匹配**：检查格式、模块相对 glob、自定义 source set/res root 和生产文件是否真实存在；没有可处理图片时移除 include，保持默认关闭。

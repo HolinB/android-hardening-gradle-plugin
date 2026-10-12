@@ -7,10 +7,12 @@ object OwnedArtifactSimilarityScorerV1 {
     const val SCORER_VERSION = "owned-artifact-v1"
 
     fun compare(ordinary: OwnedArtifactProfile, hardened: OwnedArtifactProfile): SimilarityReport {
-        val methodMatches = matchMethods(ordinary.methods, hardened.methods)
+        val ordinaryMethods = ordinary.methods.map(::prepare)
+        val hardenedMethods = hardened.methods.map(::prepare)
+        val methodMatches = matchMethods(ordinaryMethods, hardenedMethods)
         val longMethodMatches = matchMethods(
-            ordinary.methods.filter { it.instructionCount >= LONG_METHOD_MIN_INSTRUCTIONS },
-            hardened.methods.filter { it.instructionCount >= LONG_METHOD_MIN_INSTRUCTIONS },
+            ordinaryMethods.filter { it.fingerprint.instructionCount >= LONG_METHOD_MIN_INSTRUCTIONS },
+            hardenedMethods.filter { it.fingerprint.instructionCount >= LONG_METHOD_MIN_INSTRUCTIONS },
         )
         val pairedResources = ordinary.resources.mapNotNull { ordinaryResource ->
             hardened.resources.firstOrNull { hardenedResource ->
@@ -75,30 +77,58 @@ object OwnedArtifactSimilarityScorerV1 {
         )
     }
 
-    fun methodSimilarity(left: MethodFingerprint, right: MethodFingerprint): Double {
-        val opcode = jaccard(shingles(left.opcodeTokens.map(::normalizeOpcode), 5), shingles(right.opcodeTokens.map(::normalizeOpcode), 5))
-        val cfg = jaccard(left.blockSignature.map(::normalizeCfg).toSet(), right.blockSignature.map(::normalizeCfg).toSet())
-        val api = jaccard(shingles(left.apiCalls.map(::platformCategory), 2), shingles(right.apiCalls.map(::platformCategory), 2))
-        val strings = jaccard(left.constants.map(::stringLengthCategory).toSet(), right.constants.map(::stringLengthCategory).toSet())
+    fun methodSimilarity(left: MethodFingerprint, right: MethodFingerprint): Double =
+        methodSimilarity(features(left), features(right))
+
+    private fun methodSimilarity(left: MethodFeatures, right: MethodFeatures): Double {
+        val opcode = jaccard(left.opcodeShingles, right.opcodeShingles)
+        val cfg = jaccard(left.cfg, right.cfg)
+        val api = jaccard(left.apiShingles, right.apiShingles)
+        val strings = jaccard(left.stringCategories, right.stringCategories)
         return OPCODE_WEIGHT * opcode + CFG_WEIGHT * cfg + API_WEIGHT * api + STRING_WEIGHT * strings
     }
 
     private fun matchMethods(
-        ordinary: List<MethodFingerprint>,
-        hardened: List<MethodFingerprint>,
+        ordinary: List<PreparedMethod>,
+        hardened: List<PreparedMethod>,
     ): List<MethodMatch> {
-        val used = mutableSetOf<Int>()
-        return ordinary.sortedWith(compareByDescending<MethodFingerprint> { it.instructionCount }.thenBy { it.identifier })
+        val used = BooleanArray(hardened.size)
+        val exactCandidates = hardened.indices.groupBy { hardened[it].features }
+        return ordinary.sortedWith(
+            compareByDescending<PreparedMethod> { it.fingerprint.instructionCount }
+                .thenBy { it.fingerprint.identifier },
+        )
             .mapNotNull { before ->
-                hardened.indices.asSequence().filterNot(used::contains).map { index ->
-                    MethodMatch(before, hardened[index], methodSimilarity(before, hardened[index]), index)
+                val unusedExact = exactCandidates[before.features].orEmpty().filterNot { used[it] }
+                val candidateIndices = if (unusedExact.isNotEmpty()) {
+                    unusedExact.asSequence()
+                } else {
+                    hardened.indices.asSequence().filterNot { used[it] }
+                }
+                candidateIndices.map { index ->
+                    val after = hardened[index]
+                    MethodMatch(
+                        before.fingerprint,
+                        after.fingerprint,
+                        methodSimilarity(before.features, after.features),
+                        index,
+                    )
                 }.maxWithOrNull(
                     compareBy<MethodMatch> { it.similarity }
                         .thenByDescending { kotlin.math.abs(it.ordinary.instructionCount - it.hardened.instructionCount) }
                         .thenByDescending { it.hardened.identifier },
-                )?.also { used += it.hardenedIndex }
+                )?.also { used[it.hardenedIndex] = true }
             }
     }
+
+    private fun prepare(method: MethodFingerprint): PreparedMethod = PreparedMethod(method, features(method))
+
+    private fun features(method: MethodFingerprint): MethodFeatures = MethodFeatures(
+        shingles(method.opcodeTokens.map(::normalizeOpcode), 5),
+        method.blockSignature.mapTo(linkedSetOf(), ::normalizeCfg),
+        shingles(method.apiCalls.map(::platformCategory), 2),
+        method.constants.mapTo(linkedSetOf(), ::stringLengthCategory),
+    )
 
     private fun methodScore(ordinary: List<MethodFingerprint>, matches: List<MethodMatch>): Double {
         if (ordinary.isEmpty()) return 100.0
@@ -173,8 +203,23 @@ object OwnedArtifactSimilarityScorerV1 {
 
     private fun jaccard(left: Set<String>, right: Set<String>): Double {
         if (left.isEmpty() && right.isEmpty()) return 1.0
-        return (left intersect right).size.toDouble() / (left union right).size
+        val smaller = if (left.size <= right.size) left else right
+        val larger = if (left.size <= right.size) right else left
+        val intersectionSize = smaller.count(larger::contains)
+        return intersectionSize.toDouble() / (left.size + right.size - intersectionSize)
     }
+
+    private data class PreparedMethod(
+        val fingerprint: MethodFingerprint,
+        val features: MethodFeatures,
+    )
+
+    private data class MethodFeatures(
+        val opcodeShingles: Set<String>,
+        val cfg: Set<String>,
+        val apiShingles: Set<String>,
+        val stringCategories: Set<String>,
+    )
 
     private data class MethodMatch(
         val ordinary: MethodFingerprint,

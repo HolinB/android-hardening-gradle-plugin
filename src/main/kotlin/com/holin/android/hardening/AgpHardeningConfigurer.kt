@@ -28,6 +28,10 @@ import com.holin.android.hardening.tasks.ValidateHardeningBundleTask
 import com.holin.android.hardening.tasks.VerifyHardeningTask
 import com.holin.android.hardening.tasks.CaptureHardeningBaselineTask
 import com.holin.android.hardening.tasks.CompareHardeningSimilarityTask
+import com.holin.android.hardening.tasks.ProtectHardeningRuntimeTask
+import com.holin.android.hardening.tasks.RelocateHardeningManifestTask
+import com.holin.android.hardening.tasks.RelocateHardeningClassesTask
+import com.holin.android.hardening.tasks.ComposeHardeningMappingTask
 import com.holin.android.hardening.tasks.SmokeHardeningTask
 import org.gradle.api.Project
 import org.gradle.api.artifacts.component.ProjectComponentIdentifier
@@ -161,6 +165,8 @@ internal object AgpHardeningConfigurer {
             )
             if (variantWiringEnabled) {
                 val effectiveR8Rules = wireFilteredAppRules(project, extension, variant, tasks)
+                wireRuntimeProtection(project, extension, androidComponents, variant, tasks)
+                val componentPlan = wireComponentTransforms(project, extension, variant, tasks)
                 wireStableCodeNaming(
                     project,
                     extension,
@@ -168,9 +174,164 @@ internal object AgpHardeningConfigurer {
                     variant,
                     tasks,
                     effectiveR8Rules,
+                    componentPlan,
                 )
+                wireDependencies(project, extension, variant, tasks)
             }
         }
+    }
+
+    private fun wireDependencies(
+        project: Project,
+        extension: AndroidHardeningExtension,
+        variant: ApplicationVariant,
+        tasks: HardeningVariantTasks,
+    ) {
+        if (!extension.dependencies.enabled.get()) return
+        val suffix = HardeningNames.taskSuffix(variant.name)
+        val configuration = project.configurations.getByName("${variant.name}RuntimeClasspath")
+        val originals = configuration.incoming.artifactView {
+            componentFilter { it is org.gradle.api.artifacts.component.ModuleComponentIdentifier }
+        }.artifacts
+        val effective = configuration.incoming.artifactView {
+            componentFilter { it is org.gradle.api.artifacts.component.ModuleComponentIdentifier }
+            attributes.attribute(ArtifactTypeDefinition.ARTIFACT_TYPE_ATTRIBUTE, ANDROID_CLASSES_JAR)
+        }.artifacts
+        val task = project.tasks.register("protectHardening${suffix}Dependencies", com.holin.android.hardening.tasks.DependencyHardeningTask::class.java) {
+            group = "hardening"
+            policy.set(project.providers.provider { extension.dependencies.policy().encode() })
+            lineageSeed.set(tasks.prepare.flatMap { it.preparedDirectory.file("seed.bin") })
+            dependencyInputs.from(originals.artifactFiles, effective.artifactFiles)
+            artifactMetadata.set(project.providers.provider {
+                val raw = originals.artifacts.groupBy { it.id.componentIdentifier }
+                effective.artifacts.distinctBy { "${it.id.componentIdentifier.displayName}:${it.file.canonicalPath}" }.sortedBy { it.id.componentIdentifier.displayName }.map { artifact ->
+                    val id = artifact.id.componentIdentifier as org.gradle.api.artifacts.component.ModuleComponentIdentifier
+                    val original = requireNotNull(raw[id]).distinctBy { it.file.canonicalPath }.single()
+                    groovy.json.JsonOutput.toJson(mapOf("coordinate" to "${id.group}:${id.module}:${id.version}",
+                        "original" to original.file.absolutePath, "classes" to artifact.file.absolutePath))
+                }
+            })
+            inputJars.convention(emptyList())
+            inputDirectories.convention(emptyList())
+            outputJar.set(project.layout.buildDirectory.file("intermediates/hardening/${variant.name}/dependencies/classes.jar"))
+            relocationPlan.set(project.layout.buildDirectory.file("intermediates/hardening/${variant.name}/dependencies/plan.json"))
+            derivedArtifacts.set(project.layout.buildDirectory.dir("intermediates/hardening/${variant.name}/dependencies/derived"))
+            report.set(project.layout.buildDirectory.file("reports/hardening/${variant.name}/dependencies.json"))
+        }
+        val rewrite = requireNotNull(tasks.pipeline).rewrite
+        rewrite.configure {
+            dependencyTransformationReport.set(task.flatMap { it.report })
+            preR8RelocationPlans.from(task.flatMap { it.relocationPlan })
+        }
+        if (extension.dependencies.includes.get().isEmpty()) return
+        variant.artifacts.forScope(ScopedArtifacts.Scope.ALL).use(task).toTransform(ScopedArtifact.CLASSES,
+            com.holin.android.hardening.tasks.DependencyHardeningTask::inputJars,
+            com.holin.android.hardening.tasks.DependencyHardeningTask::inputDirectories,
+            com.holin.android.hardening.tasks.DependencyHardeningTask::outputJar)
+        val previousMapping = if (extension.components.enabled.get()) {
+            project.tasks.named("composeHardening${suffix}Mapping", ComposeHardeningMappingTask::class.java).flatMap { it.outputMapping }
+        } else variant.artifacts.get(SingleArtifact.OBFUSCATION_MAPPING_FILE)
+        val mapping = project.tasks.register("composeHardening${suffix}DependencyMapping", ComposeHardeningMappingTask::class.java) {
+            group = "hardening"
+            inputMapping.set(previousMapping)
+            relocationPlan.set(task.flatMap { it.relocationPlan })
+            requireMappedClasses.set(false)
+            outputMapping.set(project.layout.buildDirectory.file("intermediates/hardening/${variant.name}/dependencies/mapping.txt"))
+            report.set(project.layout.buildDirectory.file("reports/hardening/${variant.name}/dependency-mapping.json"))
+        }.flatMap { it.outputMapping }
+        rewrite.configure { r8Mapping.set(mapping) }
+        tasks.verify.configure { currentR8Mapping.set(mapping) }
+        tasks.compare?.configure { currentR8Mapping.set(mapping) }
+    }
+
+    private fun wireRuntimeProtection(
+        project: Project,
+        extension: AndroidHardeningExtension,
+        androidComponents: ApplicationAndroidComponentsExtension,
+        variant: ApplicationVariant,
+        tasks: HardeningVariantTasks,
+    ) {
+        if (!extension.runtimeProtection.policy().enabled) return
+        val suffix = HardeningNames.taskSuffix(variant.name)
+        val resolved = project.providers.provider { extension.ownership.resolve(project.rootProject) }
+        val runtime = project.tasks.register("protectHardening${suffix}Runtime", ProtectHardeningRuntimeTask::class.java) {
+            group = "hardening"
+            namespace.set(variant.namespace)
+            policy.set(project.providers.provider { extension.runtimeProtection.policy().encode() })
+            ownership.set(resolved)
+            repositoryRoot.set(project.rootProject.layout.projectDirectory)
+            sourceOwnership.set(resolved.map { it.modules.map { module -> "${module.path}:${module.sourceSets.sorted()}" } })
+            sourceInputs.from(resolved.map { owned -> owned.modules.flatMap { module ->
+                (module.sourceRoots.javaDirectories + module.sourceRoots.kotlinDirectories + module.sourceRoots.resourceDirectories + module.sourceRoots.assetDirectories).map { root ->
+                    project.fileTree(root) { include("**/*") }
+                }
+            } })
+            classpath.from(variant.compileClasspath)
+            bootClasspath.from(androidComponents.sdkComponents.bootClasspath)
+            lineageSeed.set(tasks.prepare.flatMap { it.preparedDirectory.file("seed.bin") })
+            outputJar.set(project.layout.buildDirectory.file("intermediates/hardening/${variant.name}/runtime/classes.jar"))
+            closure.set(project.layout.buildDirectory.file("intermediates/hardening/${variant.name}/runtime/closure.json"))
+            keepRules.set(project.layout.buildDirectory.file("intermediates/hardening/${variant.name}/runtime/keep.pro"))
+            report.set(project.layout.buildDirectory.file("reports/hardening/${variant.name}/runtime-readers.json"))
+            generatedDirectory.set(project.layout.buildDirectory.dir("intermediates/hardening/${variant.name}/runtime/generated"))
+        }
+        variant.artifacts.forScope(ScopedArtifacts.Scope.PROJECT).use(runtime).toTransform(ScopedArtifact.CLASSES,
+            ProtectHardeningRuntimeTask::inputJars, ProtectHardeningRuntimeTask::inputDirectories, ProtectHardeningRuntimeTask::outputJar)
+        variant.proguardFiles.add(runtime.flatMap(ProtectHardeningRuntimeTask::keepRules))
+        requireNotNull(tasks.pipeline).rewrite.configure { runtimeClosure.set(runtime.flatMap(ProtectHardeningRuntimeTask::closure)) }
+    }
+
+    private fun wireComponentTransforms(
+        project: Project,
+        extension: AndroidHardeningExtension,
+        variant: ApplicationVariant,
+        tasks: HardeningVariantTasks,
+    ): Provider<RegularFile>? {
+        if (!extension.components.enabled.get()) return null
+        val suffix = HardeningNames.taskSuffix(variant.name)
+        val resolved = project.providers.provider { extension.ownership.resolve(project.rootProject) }
+        val manifest = project.tasks.register("relocateHardening${suffix}Manifest", RelocateHardeningManifestTask::class.java) {
+            group = "hardening"
+            policy.set(project.providers.provider { extension.components.policy().encode() })
+            namespace.set(variant.namespace)
+            repositoryRoot.set(project.rootProject.layout.projectDirectory)
+            ownership.set(resolved)
+            sourceOwnership.set(resolved.map { it.modules.map { module -> "${module.path}:${module.sourceSets.sorted()}" } })
+            sourceInputs.from(resolved.map { owned -> owned.modules.flatMap { module ->
+                (module.sourceRoots.javaDirectories + module.sourceRoots.kotlinDirectories + module.sourceRoots.resourceDirectories).map { root ->
+                    project.fileTree(root) { include("**/*.kt", "**/*.java", "**/*.xml") }
+                }
+            } })
+            lineageSeed.set(tasks.prepare.flatMap { it.preparedDirectory.file("seed.bin") })
+            outputManifest.set(project.layout.buildDirectory.file("intermediates/hardening/${variant.name}/components/AndroidManifest.xml"))
+            relocationPlan.set(project.layout.buildDirectory.file("intermediates/hardening/${variant.name}/components/plan.json"))
+            report.set(project.layout.buildDirectory.file("reports/hardening/${variant.name}/components.json"))
+        }
+        variant.artifacts.use(manifest).wiredWithFiles(RelocateHardeningManifestTask::inputManifest, RelocateHardeningManifestTask::outputManifest)
+            .toTransform(SingleArtifact.MERGED_MANIFEST)
+        val plan = manifest.flatMap(RelocateHardeningManifestTask::relocationPlan)
+        requireNotNull(tasks.pipeline).rewrite.configure { preR8RelocationPlans.from(plan) }
+        val classes = project.tasks.register("relocateHardening${suffix}Classes", RelocateHardeningClassesTask::class.java) {
+            group = "hardening"
+            relocationPlan.set(plan)
+            externalClasses.from(variant.compileClasspath)
+            outputJar.set(project.layout.buildDirectory.file("intermediates/hardening/${variant.name}/components/classes.jar"))
+            report.set(project.layout.buildDirectory.file("reports/hardening/${variant.name}/component-classes.json"))
+        }
+        variant.artifacts.forScope(ScopedArtifacts.Scope.PROJECT).use(classes).toTransform(ScopedArtifact.CLASSES,
+            RelocateHardeningClassesTask::inputJars, RelocateHardeningClassesTask::inputDirectories, RelocateHardeningClassesTask::outputJar)
+        val mapping = project.tasks.register("composeHardening${suffix}Mapping", ComposeHardeningMappingTask::class.java) {
+            group = "hardening"
+            relocationPlan.set(plan)
+            outputMapping.set(project.layout.buildDirectory.file("intermediates/hardening/${variant.name}/components/mapping.txt"))
+            report.set(project.layout.buildDirectory.file("reports/hardening/${variant.name}/component-mapping.json"))
+        }
+        mapping.configure { inputMapping.set(variant.artifacts.get(SingleArtifact.OBFUSCATION_MAPPING_FILE)) }
+        val composed = mapping.flatMap(ComposeHardeningMappingTask::outputMapping)
+        requireNotNull(tasks.pipeline).rewrite.configure { r8Mapping.set(composed) }
+        tasks.verify.configure { currentR8Mapping.set(composed) }
+        tasks.compare?.configure { currentR8Mapping.set(composed) }
+        return plan
     }
 
     private fun wireStableCodeNaming(
@@ -180,6 +341,7 @@ internal object AgpHardeningConfigurer {
         variant: ApplicationVariant,
         tasks: HardeningVariantTasks,
         effectiveR8Rules: Provider<RegularFile>,
+        componentPlan: Provider<RegularFile>?,
     ) {
         val resolvedOwnership = project.providers.provider { extension.ownership.resolve(project.rootProject) }
         val appStaticResourceSources = requireNotNull(variant.sources.res) {
@@ -228,6 +390,7 @@ internal object AgpHardeningConfigurer {
         ) {
             group = "hardening"
             description = "Generates the stable pre-R8 code mapping for ${variant.name}."
+            if (componentPlan != null) componentRelocationPlan.set(componentPlan)
             dependsOn(runtimeArtifacts.artifactFiles)
             dependsOn(appStaticResourceSources)
             variantName.set(variant.name)

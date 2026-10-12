@@ -155,11 +155,11 @@ class ResourceTableTransformer {
         require(actualPaths.distinct().size == actualPaths.size) {
             "resource ${request.resourceId.hexId()} contains duplicate file references"
         }
-        if (request.type == ResourceType.STYLE) {
+        if (request.type == ResourceType.STYLE || request.type.isValue) {
             require(request.entries.isEmpty()) { "style ${request.resourceId.hexId()} must not declare file paths" }
             require(actualPaths.isEmpty()) { "style ${request.resourceId.hexId()} unexpectedly contains file references" }
             validateStyleQualifiers(request, indexed.entry)
-            return PreparedRewrite(indexed, request, emptyMap(), emptyMap(), pathOnly = false)
+            return PreparedRewrite(indexed, request, emptyMap(), emptyMap(), false)
         }
 
         require(request.entries.isNotEmpty()) {
@@ -365,6 +365,9 @@ class ResourceTableTransformer {
 
     private fun validName(type: ResourceType, name: String): Boolean = when (type) {
         ResourceType.STYLE -> STYLE_NAME.matches(name)
+        ResourceType.STRING,
+        ResourceType.COLOR,
+        ResourceType.DIMEN,
         ResourceType.LAYOUT,
         ResourceType.DRAWABLE,
         ResourceType.MIPMAP,

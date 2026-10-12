@@ -44,6 +44,7 @@ import org.gradle.api.execution.TaskExecutionGraph
 import org.gradle.api.provider.Provider
 import org.gradle.api.services.BuildService
 import org.gradle.api.services.BuildServiceParameters
+import org.gradle.api.tasks.GradleBuild
 import org.gradle.api.tasks.TaskProvider
 
 internal data class HardeningBundlePipelineRequest(
@@ -61,6 +62,7 @@ internal class HardeningPluginRegistration {
         private set
 
     private val registeredVariants = linkedSetOf<String>()
+    private val isolatedBuildEntries = linkedSetOf<String>()
     private var androidApplicationApplied = false
 
     fun configure(project: Project) {
@@ -73,7 +75,9 @@ internal class HardeningPluginRegistration {
         project.gradle.taskGraph.whenReady(object : Action<TaskExecutionGraph> {
             override fun execute(graph: TaskExecutionGraph) {
                 val graphTasks = graph.allTasks
-                if (graphTasks.any { task -> task.project == project && task.group == HARDENING_GROUP }) {
+                if (graphTasks.any { task ->
+                    task.project == project && (task.group == HARDENING_GROUP || task.name in isolatedBuildEntries)
+                }) {
                     val forbidden = HardeningWiringGate.forbiddenTaskNames(graphTasks.map { task -> task.path })
                     if (forbidden.isNotEmpty()) {
                         throw GradleException(
@@ -295,6 +299,8 @@ internal class HardeningPluginRegistration {
         val assemble = project.tasks.register("hardeningAssemble$suffix", HardeningEntryTask::class.java) {
             configureEntry(extension, archive, assembleCommand)
         }
+        registerIsolatedBuildEntry(project, "assemble${suffix}Hardening", assemble.name, "universal APK")
+        registerIsolatedBuildEntry(project, "bundle${suffix}Hardening", bundle.name, "AAB")
         val benchmark = lifecycleTask(
             project,
             "benchmarkHardening$suffix",
@@ -465,6 +471,24 @@ internal class HardeningPluginRegistration {
             )
         }
         return tasks.copy(pipeline = pipeline)
+    }
+
+    private fun registerIsolatedBuildEntry(
+        project: Project,
+        entryName: String,
+        nestedTaskName: String,
+        artifact: String,
+    ) {
+        isolatedBuildEntries.add(entryName)
+        project.tasks.register(entryName, GradleBuild::class.java) {
+            description = "Builds the verified hardened $artifact with androidHardening enabled in an isolated build."
+            buildName = "${project.path.replace(':', '_')}_$entryName"
+            dir = project.rootProject.projectDir
+            tasks = listOf("${project.path.trimEnd(':')}:$nestedTaskName")
+            val nestedProperties = project.gradle.startParameter.projectProperties.toMutableMap()
+            nestedProperties["androidHardening"] = "true"
+            startParameter.projectProperties = nestedProperties
+        }
     }
 
     private fun <T : Task> lifecycleTask(
@@ -650,11 +674,16 @@ internal class AgpHardeningAdapter {
             minimumCodeSimHashDistance.set(extension.code.diversification.minimumSimHashDistance)
             maximumDexGrowth.set(extension.code.diversification.maximumGrowth)
             enforceMaximumDexGrowth.set(extension.code.diversification.enforceMaximumGrowth)
+            bitmapMode.set(extension.resources.bitmapDiversification.mode)
             minimumImageCoverage.set(extension.resources.bitmapDiversification.minimumCoverage)
             minimumImageSsim.set(extension.resources.bitmapDiversification.minimumSsim)
             minimumImagePHashDistance.set(extension.resources.bitmapDiversification.minimumPHashDistance)
             dependencyMetadata.set(extension.bundle.dependencyMetadata)
             structuralMetadataEntryCount.set(extension.bundle.structuralMetadataEntryCount)
+            valueResourcesConfiguration.set(project.providers.provider { extension.resources.values.policy().encode() })
+            nativeConfiguration.set(project.providers.provider { extension.nativeLibraries.policy().encode() })
+            assetsConfiguration.set(project.providers.provider { extension.assets.policy().encode() })
+            assetSourceFiles.from(resolvedOwnership.map { ownership -> ownership.modules.flatMap { it.sourceRoots.assetDirectories } })
             artifactBoundary.set(project.layout.buildDirectory)
             repositoryRoot.set(project.rootProject.layout.projectDirectory)
             ownership.set(resolvedOwnership)
@@ -680,6 +709,8 @@ internal class AgpHardeningAdapter {
                     invocationDirectory.map { directory -> "$directory/transformation-report.json" },
                 ),
             )
+            categoryReport.set(project.layout.buildDirectory.file("reports/hardening/$variant/category-report.json"))
+            controlledTransformationReport.set(project.layout.buildDirectory.file("reports/hardening/$variant/controlled-transformations.json"))
             ownedArtifactInventory.set(
                 project.layout.buildDirectory.file(
                     invocationDirectory.map { directory -> "$directory/owned-artifact-inventory.json" },
@@ -796,6 +827,23 @@ internal class AgpHardeningAdapter {
             usesService(lockService)
             usesService(saltService)
             configureInternalGuard(extension, assembleCommand)
+        }
+        if (variant in extension.verification.debuggableApkVariants.get()) {
+            require(variant.endsWith("Debug", true)) { "debuggable APK derivation is restricted to Debug variants" }
+            val debugDerivative = project.tasks.register(
+                "deriveHardening${suffix}DebuggableApk",
+                com.holin.android.hardening.tasks.DeriveDebugApkTask::class.java,
+            ) {
+                group = HARDENING_GROUP
+                description = "Derives a debuggable testing APK from the verified release-processed Debug APK."
+                sourceApk.set(universalApk.flatMap(AssembleHardeningUniversalApkTask::universalApk))
+                this.zipalignExecutable.set(zipalignExecutable)
+                debugApk.set(project.layout.buildDirectory.file("outputs/hardening/$variant/${variant}-hardened-debuggable.apk"))
+                verificationReport.set(project.layout.buildDirectory.file("reports/hardening/$variant/debug-apk-verification.json"))
+                useSigningMaterial(material)
+                configureInternalGuard(extension, assembleCommand)
+            }
+            tasks.assemble.configure { dependsOn(debugDerivative) }
         }
         tasks.assemble.configure {
             dependsOn(universalApk)

@@ -1,5 +1,9 @@
 package com.holin.android.hardening.tasks
 
+import com.holin.android.hardening.components.PreR8Relocation
+import com.holin.android.hardening.code.withComponentRelocations
+import org.gradle.api.tasks.Optional
+
 import com.holin.android.hardening.HardeningOwnership
 import com.holin.android.hardening.audit.HardeningSourceAuditScanner
 import com.holin.android.hardening.code.BytecodeInput
@@ -13,6 +17,7 @@ import com.holin.android.hardening.code.CoordinatorLayoutBehaviorRulesRenderer
 import com.holin.android.hardening.code.HardcodedMemberKeepNamesRulesRenderer
 import com.holin.android.hardening.code.OwnedBytecodeInventoryBuilder
 import com.holin.android.hardening.code.OwnedCodeContractClassifier
+import com.holin.android.hardening.code.ViewModelFactoryRulesRenderer
 import com.holin.android.hardening.code.PotentialBeanField
 import com.holin.android.hardening.code.PotentialBeanFieldManifest
 import com.holin.android.hardening.code.PotentialBeanFieldManifestCodec
@@ -96,6 +101,9 @@ abstract class GenerateHardeningCodeMappingTask : DefaultTask() {
     @get:InputFile
     @get:PathSensitive(PathSensitivity.NONE)
     abstract val effectiveR8Rules: RegularFileProperty
+    @get:Optional @get:InputFile @get:PathSensitive(PathSensitivity.NONE)
+    abstract val componentRelocationPlan: RegularFileProperty
+    @get:OutputFile abstract val compilerCodeMapping: RegularFileProperty
     @get:OutputFile abstract val codeRegistry: RegularFileProperty
     @get:OutputFile abstract val codeMapping: RegularFileProperty
     @get:OutputFile abstract val applyMappingRules: RegularFileProperty
@@ -103,6 +111,7 @@ abstract class GenerateHardeningCodeMappingTask : DefaultTask() {
     @get:OutputFile abstract val potentialBeanFieldsManifest: RegularFileProperty
 
     init {
+        compilerCodeMapping.convention(project.layout.buildDirectory.file("intermediates/hardening/$name/compiler-mapping.txt"))
         appStaticResourceDirectories.convention(emptyList())
         appStaticResourceLayerDirectoryCounts.convention(emptyList())
         appStaticResourceLayerIdentity.convention(emptyList())
@@ -143,9 +152,11 @@ abstract class GenerateHardeningCodeMappingTask : DefaultTask() {
     @get:Input
     val gitIgnoreControlPaths: List<String>
         get() = buildList {
-            add(requireNotNull(gitPath(listOf("rev-parse", "--git-path", "info/exclude"))).toString())
+            com.holin.android.hardening.inventory.GitRepositoryLocation.infoExclude(
+                repositoryRoot.get().asFile.toPath().toAbsolutePath().normalize(),
+            )?.let { add(it.toString()) }
             add(defaultGlobalGitIgnorePath().toString())
-            gitPath(listOf("config", "--path", "--get", "core.excludesFile"), optional = true)?.let { add(it.toString()) }
+            gitPath(listOf("config", "--path", "--get", "core.excludesFile"), true)?.let { add(it.toString()) }
         }.distinct().sorted()
 
     @get:Input
@@ -156,7 +167,9 @@ abstract class GenerateHardeningCodeMappingTask : DefaultTask() {
     fun generate() {
         val generated = createPlan()
         val plan = generated.plan
+        val aliases = componentAliases()
         val mapping = R8CodeMappingRenderer().render(plan)
+        val compilerMapping = PreR8Relocation.rewriteMappingLeft(mapping, aliases)
         val registry = RegistryCodec().encode(plan.registry)
         val mappingPath = codeMapping.get().asFile.toPath()
         val registryPath = codeRegistry.get().asFile.toPath()
@@ -191,11 +204,18 @@ abstract class GenerateHardeningCodeMappingTask : DefaultTask() {
         )
         val atomicFiles = AtomicFiles()
         atomicFiles.replace(mappingPath, mapping.toByteArray(Charsets.UTF_8))
+        atomicFiles.replace(compilerCodeMapping.get().asFile.toPath(), compilerMapping.toByteArray(Charsets.UTF_8))
         atomicFiles.replace(registryPath, registry.toByteArray(Charsets.UTF_8))
-        atomicFiles.replace(rulesPath, applyRules(generated, mappingPath, mappingSha256).toByteArray(Charsets.UTF_8))
+        val compilerRules = PreR8Relocation.replaceTypeNames(
+            applyRules(generated, if (aliases.isEmpty()) mappingPath else compilerCodeMapping.get().asFile.toPath(),
+                Sha256.hex(compilerMapping.toByteArray(Charsets.UTF_8))), aliases)
+        atomicFiles.replace(rulesPath, compilerRules.toByteArray(Charsets.UTF_8))
         atomicFiles.replace(manifestPath, manifest.toByteArray(Charsets.UTF_8))
         atomicFiles.replace(potentialBeanFieldsManifestPath, fieldManifest.toByteArray(Charsets.UTF_8))
     }
+
+    private fun componentAliases(): Map<String, String> = componentRelocationPlan.orNull?.asFile
+        ?.let { PreR8Relocation.readPlan(it.readText()) } ?: emptyMap()
 
     private fun createPlan(): GeneratedCodePlan {
         require(unresolvedAppReflectionPolicy.get() == "FAIL_BUILD") {
@@ -233,7 +253,7 @@ abstract class GenerateHardeningCodeMappingTask : DefaultTask() {
                 normalized(file.toPath()) to index
             }.toMap()
             val runtimePrecedence = bootPrecedence.size
-            val bytecode = OwnedBytecodeInventoryBuilder(root, ownership.get()).build(
+            val bytecode = OwnedBytecodeInventoryBuilder(root, ownership.get(), componentAliases().entries.associate { it.value to it.key }).build(
                 (owned + hierarchy).map { input ->
                     BytecodeInput(
                         input.file,
@@ -268,15 +288,16 @@ abstract class GenerateHardeningCodeMappingTask : DefaultTask() {
             val fieldCodec = PotentialBeanFieldManifestCodec()
             GeneratedCodePlan(
                 CodeNameAllocator(PseudowordRegistry.restore(seed, registrySnapshot)).allocate(
-                    inventory = inventory,
-                    bytecode = bytecode,
-                    generation = state.identity.generation,
-                ),
+                    inventory,
+                    bytecode,
+                    state.identity.generation,
+                ).withComponentRelocations(componentAliases()),
                 bytecode.programClasses,
                 potentialBeanFields,
                 state.coordinates.configurationSha256,
                 fieldCodec.inventorySha256(potentialBeanFields),
                 retiredLegacyFieldAssignmentCount,
+                ViewModelFactoryRulesRenderer().render(bytecode),
             )
         } finally {
             seed.fill(0)
@@ -361,6 +382,8 @@ abstract class GenerateHardeningCodeMappingTask : DefaultTask() {
         )
         append(programDescriptorPackages)
         if (programDescriptorPackages.isNotEmpty()) append('\n')
+        append(generated.viewModelFactoryRules)
+        if (generated.viewModelFactoryRules.isNotEmpty()) append('\n')
         append(OwnedCodeOptimizationRules(repositoryRoot.get().asFile.toPath(), ownership.get()).render())
     }
 
@@ -371,6 +394,7 @@ abstract class GenerateHardeningCodeMappingTask : DefaultTask() {
         val configurationSha256: String,
         val inventorySha256: String,
         val retiredLegacyFieldAssignmentCount: Int,
+        val viewModelFactoryRules: String,
     )
 
     private fun retiredLegacyFieldAssignmentCount(

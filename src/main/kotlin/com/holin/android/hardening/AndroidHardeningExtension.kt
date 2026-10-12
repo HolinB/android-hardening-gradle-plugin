@@ -31,6 +31,12 @@ open class AndroidHardeningExtension @Inject constructor(
     val naming: NamingSpec = objects.newInstance(NamingSpec::class.java, objects)
     val code: CodeSpec = objects.newInstance(CodeSpec::class.java, objects)
     val resources: ResourcesSpec = objects.newInstance(ResourcesSpec::class.java, objects)
+    val dependencies: DependenciesSpec = objects.newInstance(DependenciesSpec::class.java, objects)
+    val nativeLibraries: NativeLibrariesSpec = objects.newInstance(NativeLibrariesSpec::class.java, objects)
+    val runtimeProtection: RuntimeProtectionSpec = objects.newInstance(RuntimeProtectionSpec::class.java, objects)
+    val components: ComponentsSpec = objects.newInstance(ComponentsSpec::class.java, objects)
+    val assets: AssetsSpec = objects.newInstance(AssetsSpec::class.java, objects)
+    val verification: VerificationSpec = objects.newInstance(VerificationSpec::class.java, objects)
     val bundle: BundleSpec = objects.newInstance(BundleSpec::class.java, objects)
     val contracts: ContractsSpec = objects.newInstance(ContractsSpec::class.java, objects)
     val signing: SigningSpec = objects.newInstance(SigningSpec::class.java, objects)
@@ -48,6 +54,12 @@ open class AndroidHardeningExtension @Inject constructor(
     fun naming(action: Action<in NamingSpec>) = action.execute(naming)
     fun code(action: Action<in CodeSpec>) = action.execute(code)
     fun resources(action: Action<in ResourcesSpec>) = action.execute(resources)
+    fun dependencies(action: Action<in DependenciesSpec>) = action.execute(dependencies)
+    fun nativeLibraries(action: Action<in NativeLibrariesSpec>) = action.execute(nativeLibraries)
+    fun runtimeProtection(action: Action<in RuntimeProtectionSpec>) = action.execute(runtimeProtection)
+    fun components(action: Action<in ComponentsSpec>) = action.execute(components)
+    fun assets(action: Action<in AssetsSpec>) = action.execute(assets)
+    fun verification(action: Action<in VerificationSpec>) = action.execute(verification)
     fun bundle(action: Action<in BundleSpec>) = action.execute(bundle)
     fun contracts(action: Action<in ContractsSpec>) = action.execute(contracts)
     fun signing(action: Action<in SigningSpec>) = action.execute(signing)
@@ -59,6 +71,12 @@ open class AndroidHardeningExtension @Inject constructor(
     val REPORT_ONLY: BenchmarkMode get() = BenchmarkMode.REPORT_ONLY
 
     fun validateV1(): ValidatedHardeningConfiguration {
+        dependencies.policy()
+        nativeLibraries.policy()
+        runtimeProtection.policy()
+        components.policy()
+        assets.policy()
+        resources.values.policy()
         val validatedProjectKey = HardeningNames.requireProjectKey(projectKey.get())
         val validatedVariants = variants.included.get().map(HardeningNames::requireVariant).toSet()
         require(validatedVariants.isNotEmpty()) { "variants must include at least one variant" }
@@ -70,8 +88,12 @@ open class AndroidHardeningExtension @Inject constructor(
         }
         requireFraction("code.diversification.maximumGrowth", code.diversification.maximumGrowth.get())
         requireFraction("resources.bitmapDiversification.minimumCoverage", resources.bitmapDiversification.minimumCoverage.get())
-        require(resources.bitmapDiversification.minimumPHashDistance.get() in 11..64) {
-            "resources.bitmapDiversification.minimumPHashDistance must be in 11..64"
+        if (resources.bitmapDiversification.mode.get() == com.holin.android.hardening.resources.BitmapMode.PIXEL_EXACT) {
+            require(resources.bitmapDiversification.minimumPHashDistance.get() == 0 && resources.bitmapDiversification.minimumSsim.get() == 1.0) {
+                "PIXEL_EXACT requires minimumPHashDistance=0 and minimumSsim=1.0"
+            }
+        } else {
+            require(resources.bitmapDiversification.minimumPHashDistance.get() in 11..64)
         }
         requireFraction("resources.bitmapDiversification.minimumSsim", resources.bitmapDiversification.minimumSsim.get())
         require(bundle.structuralMetadataEntryCount.get() in 0..64) {
@@ -232,14 +254,19 @@ open class ResourcesSpec @Inject constructor(objects: ObjectFactory) {
     val preserveResourceIds: Property<Boolean> = objects.property(Boolean::class.java).convention(true)
     val reuseNamesAcrossBuilds: Property<Boolean> = objects.property(Boolean::class.java).convention(true)
     val styleHashPolicy: Property<StyleHashPolicy> = objects.property(StyleHashPolicy::class.java).convention(StyleHashPolicy.RESOURCE_TABLE_ONLY)
+    val values: ValueResourcesSpec = objects.newInstance(ValueResourcesSpec::class.java, objects)
     val bitmapDiversification: BitmapDiversificationSpec = objects.newInstance(BitmapDiversificationSpec::class.java, objects)
 
+    fun values(action: Action<in ValueResourcesSpec>) = action.execute(values)
     fun bitmapDiversification(action: Action<in BitmapDiversificationSpec>) = action.execute(bitmapDiversification)
     val RENAME_AND_AUDIT: ResourceMode get() = ResourceMode.RENAME_AND_AUDIT
     val RESOURCE_TABLE_ONLY: StyleHashPolicy get() = StyleHashPolicy.RESOURCE_TABLE_ONLY
 }
 
 open class BitmapDiversificationSpec @Inject constructor(objects: ObjectFactory) {
+    val mode: Property<com.holin.android.hardening.resources.BitmapMode> = objects.property(com.holin.android.hardening.resources.BitmapMode::class.java).convention(com.holin.android.hardening.resources.BitmapMode.LEGACY_PERCEPTUAL)
+    val PIXEL_EXACT: com.holin.android.hardening.resources.BitmapMode get() = com.holin.android.hardening.resources.BitmapMode.PIXEL_EXACT
+    val LEGACY_PERCEPTUAL: com.holin.android.hardening.resources.BitmapMode get() = com.holin.android.hardening.resources.BitmapMode.LEGACY_PERCEPTUAL
     val safeOnly: Property<Boolean> = objects.property(Boolean::class.java).convention(true)
     val minimumCoverage: Property<Double> = objects.property(Double::class.java).convention(0.90)
     val minimumPHashDistance: Property<Int> = objects.property(Int::class.java).convention(11)
@@ -390,4 +417,63 @@ data class LegacyPluginDeclaration(
 open class CompatibilitySpec @Inject constructor(objects: ObjectFactory) {
     val autoMigrateLegacyState: Property<Boolean> = objects.property(Boolean::class.java).convention(false)
     val migrationDescriptor: RegularFileProperty = objects.fileProperty()
+}
+
+open class VerificationSpec @Inject constructor(objects: ObjectFactory) {
+    val debuggableApkVariants: SetProperty<String> = objects.setProperty(String::class.java).convention(emptySet())
+}
+
+open class ValueResourcesSpec @Inject constructor(objects: ObjectFactory) {
+    val enabled: Property<Boolean> = objects.property(Boolean::class.java).convention(false)
+    val includes: SetProperty<String> = objects.setProperty(String::class.java).convention(setOf("string/*", "color/*", "dimen/*"))
+    val excludes: SetProperty<String> = objects.setProperty(String::class.java).convention(emptySet())
+    val minimumCoverage: Property<Double> = objects.property(Double::class.java).convention(0.0)
+    fun policy(): com.holin.android.hardening.resources.ValueResourcePolicy =
+        com.holin.android.hardening.resources.ValueResourcePolicy(enabled.get(), includes.get(), excludes.get(), minimumCoverage.get())
+}
+
+open class AssetsSpec @Inject constructor(objects: ObjectFactory) {
+    val enabled: Property<Boolean> = objects.property(Boolean::class.java).convention(false)
+    val includes: SetProperty<String> = objects.setProperty(String::class.java).convention(setOf("**"))
+    val excludes: SetProperty<String> = objects.setProperty(String::class.java).convention(emptySet())
+    val images: Property<Boolean> = objects.property(Boolean::class.java).convention(false)
+    val fonts: Property<Boolean> = objects.property(Boolean::class.java).convention(false)
+    val json: Property<Boolean> = objects.property(Boolean::class.java).convention(false)
+    val minimumCoverage: Property<Double> = objects.property(Double::class.java).convention(0.0)
+    fun policy(): com.holin.android.hardening.resources.AssetPolicy =
+        com.holin.android.hardening.resources.AssetPolicy(enabled.get(), includes.get(), excludes.get(), images.get(), fonts.get(), json.get(), minimumCoverage.get())
+}
+
+open class ComponentsSpec @Inject constructor(objects: ObjectFactory) {
+    val enabled: Property<Boolean> = objects.property(Boolean::class.java).convention(false)
+    val includes: SetProperty<String> = objects.setProperty(String::class.java).convention(emptySet())
+    val excludes: SetProperty<String> = objects.setProperty(String::class.java).convention(emptySet())
+    val minimumCoverage: Property<Double> = objects.property(Double::class.java).convention(0.0)
+    fun policy() = com.holin.android.hardening.components.ComponentPolicy(enabled.get(), includes.get(), excludes.get(), minimumCoverage.get())
+}
+
+open class RuntimeProtectionSpec @Inject constructor(objects: ObjectFactory) {
+    val strings: SetProperty<String> = objects.setProperty(String::class.java).convention(emptySet())
+    val minimumStringCoverage: Property<Double> = objects.property(Double::class.java).convention(0.0)
+    val assetPaths: SetProperty<String> = objects.setProperty(String::class.java).convention(emptySet())
+    val assetReaders: SetProperty<String> = objects.setProperty(String::class.java).convention(emptySet())
+    val minimumAssetCoverage: Property<Double> = objects.property(Double::class.java).convention(0.0)
+    fun policy() = com.holin.android.hardening.runtime.RuntimeProtectionPolicy(strings.get(), minimumStringCoverage.get(),
+        assetPaths.get(), assetReaders.get(), minimumAssetCoverage.get())
+}
+
+open class NativeLibrariesSpec @Inject constructor(objects: ObjectFactory) {
+    val enabled: Property<Boolean> = objects.property(Boolean::class.java).convention(false)
+    val includes: SetProperty<String> = objects.setProperty(String::class.java).convention(emptySet())
+    val excludes: SetProperty<String> = objects.setProperty(String::class.java).convention(emptySet())
+    val minimumCoverage: Property<Double> = objects.property(Double::class.java).convention(0.0)
+    fun policy() = com.holin.android.hardening.nativecode.NativePolicy(enabled.get(), includes.get(), excludes.get(), minimumCoverage.get())
+}
+
+open class DependenciesSpec @Inject constructor(objects: ObjectFactory) {
+    val enabled: Property<Boolean> = objects.property(Boolean::class.java).convention(false)
+    val includes: SetProperty<String> = objects.setProperty(String::class.java).convention(emptySet())
+    val excludes: SetProperty<String> = objects.setProperty(String::class.java).convention(emptySet())
+    val minimumCoverage: Property<Double> = objects.property(Double::class.java).convention(0.0)
+    fun policy() = com.holin.android.hardening.dependencies.DependencyPolicy(enabled.get(), includes.get(), excludes.get(), minimumCoverage.get())
 }

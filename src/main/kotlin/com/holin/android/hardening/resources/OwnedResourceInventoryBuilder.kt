@@ -28,6 +28,7 @@ class OwnedResourceInventoryBuilder(
     private val ownership: HardeningOwnership,
     private val gitIgnoreMatcher: GitIgnoreMatcher = GitIgnoreMatcher(repositoryRoot),
     private val externallyNamedResources: Set<Pair<ResourceType, String>> = emptySet(),
+    private val valueResourcesEnabled: Boolean = false,
 ) {
     private val root = repositoryRoot.toAbsolutePath().normalize()
 
@@ -95,7 +96,8 @@ class OwnedResourceInventoryBuilder(
                         addAll(AaptResourceEntryCompat.flagDisabledConfigValues(tableEntry))
                         addAll(AaptResourceEntryCompat.readwriteConfigValues(tableEntry))
                     }
-                    if (type == ResourceType.STYLE) {
+                    if (type == ResourceType.STYLE || type.isValue) {
+                        if (type.isValue && configs.any { it.value.item.hasFile() }) return@entryLoop
                         require(configs.isNotEmpty()) { "owned style ${tableEntry.name} has no table values" }
                         configs.forEach { config ->
                             output += ResourceInventoryEntry(
@@ -104,6 +106,9 @@ class OwnedResourceInventoryBuilder(
                                 type,
                                 tableEntry.name,
                                 config.config.toResourceQualifier(),
+                                null, null, ResourceOrigin.OWNED,
+                                type to tableEntry.name in externallyNamedResources,
+                                false, false, false, null, source.source, false,
                             )
                         }
                     } else {
@@ -203,7 +208,7 @@ class OwnedResourceInventoryBuilder(
     private fun logicalNames(candidate: ResourceCandidate): Sequence<OwnedResourceSourceName> {
         val baseDirectory = candidate.directory.substringBefore('-')
         return when (baseDirectory) {
-            "values" -> STYLE_TAG.findAll(Files.readString(candidate.source)).map { match ->
+            "values" -> valueNames(candidate) + STYLE_TAG.findAll(Files.readString(candidate.source)).map { match ->
                 OwnedResourceSourceName(
                     candidate.module,
                     ResourceType.STYLE,
@@ -217,6 +222,25 @@ class OwnedResourceInventoryBuilder(
             }
             else -> FILE_TYPES_BY_DIRECTORY[baseDirectory]?.let { fileName(candidate, it) } ?: emptySequence()
         }
+    }
+
+    private fun valueNames(candidate: ResourceCandidate): Sequence<OwnedResourceSourceName> {
+        if (!valueResourcesEnabled) return emptySequence()
+        val factory = javax.xml.parsers.DocumentBuilderFactory.newInstance()
+        factory.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true)
+        factory.setFeature("http://xml.org/sax/features/external-general-entities", false)
+        factory.setFeature("http://xml.org/sax/features/external-parameter-entities", false)
+        val document = Files.newInputStream(candidate.source).use { factory.newDocumentBuilder().parse(it) }
+        val children = document.documentElement.childNodes
+        return (0 until children.length).asSequence().mapNotNull { children.item(it) as? org.w3c.dom.Element }
+            .mapNotNull { element ->
+                val tag = if (element.tagName == "item") element.getAttribute("type") else element.tagName
+                val type = ResourceType.values().firstOrNull { it.isValue && it.directoryName == tag } ?: return@mapNotNull null
+                val name = element.getAttribute("name")
+                if (!FILE_NAME.matches(name)) return@mapNotNull null
+                OwnedResourceSourceName(candidate.module, type, name, candidate.source, candidate.moduleRelativePath,
+                    false, candidate.directory.substringAfter('-', ""), candidate.sourcePriority)
+            }
     }
 
     private fun fileName(candidate: ResourceCandidate, type: ResourceType): Sequence<OwnedResourceSourceName> {
@@ -275,7 +299,7 @@ class OwnedResourceInventoryBuilder(
         private val FILE_NAME = Regex("[a-z][a-z0-9_]*")
         private val STYLE_TAG = Regex("<style\\s+[^>]*name\\s*=\\s*[\"']([^\"']+)[\"']", RegexOption.IGNORE_CASE)
         private val FILE_TYPES_BY_DIRECTORY = ResourceType.values()
-            .filterNot { it == ResourceType.STYLE }
+            .filterNot { it == ResourceType.STYLE || it.isValue }
             .associateBy(ResourceType::directoryName)
     }
 }

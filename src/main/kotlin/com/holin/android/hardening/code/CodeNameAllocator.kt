@@ -375,3 +375,16 @@ private val EXCLUSION_ORDER = compareBy<CodeExclusion>(
 )
 
 private fun <T> immutableList(values: Collection<T>): List<T> = Collections.unmodifiableList(ArrayList(values))
+
+/** Component aliases are allocated before javac/R8; keep registry identities source-canonical. */
+fun CodeNamePlan.withComponentRelocations(relocations: Map<String, String>): CodeNamePlan {
+    if (relocations.isEmpty()) return this
+    require(relocations.keys.all { it in ownedOriginalOwners }) { "component relocation is not owned" }
+    val updated = assignments.filterNot { it.key.kind == CodeSymbolKind.CLASS && it.key.owner in relocations }
+        .map { assignment ->
+            relocations[assignment.key.owner]?.let { assignment.copy(assignment.key, assignment.alias, it) } ?: assignment
+        } + relocations.map { (original, output) ->
+            AssignedCodeName(CodeSymbolKey(CodeSymbolKind.CLASS, original, original.substringAfterLast('/'), "L$original;"), output.substringAfterLast('/'), output)
+        }
+    return ImmutableCodeNamePlan(updated, exclusions.filterNot { it.key.kind == CodeSymbolKind.CLASS && it.key.owner in relocations }, registry, ownedOriginalOwners)
+}

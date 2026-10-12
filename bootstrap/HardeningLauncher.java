@@ -30,15 +30,15 @@ import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
 
 public final class HardeningLauncher {
-    private static final String VERSION = "1.3.0";
-    private static final String ARCHIVE_NAME = "hardening-gradle-plugin-1.3.0-portable-maven.zip";
+    private static final String VERSION = "1.4.1";
+    private static final String ARCHIVE_NAME = "hardening-gradle-plugin-1.4.1-portable-maven.zip";
     private static final String RELEASE_URL =
-        "https://github.com/HolinB/android-hardening-gradle-plugin/releases/download/v1.3.0/" + ARCHIVE_NAME;
+        "https://github.com/HolinB/android-hardening-gradle-plugin/releases/download/v1.4.1/" + ARCHIVE_NAME;
     private static final String RELEASE_SHA256 =
-        "7f525e886b989eda3951dd3e3e935bc57c3df37e1fd3899caf94b9ed2d7356f3";
+        "a93d31d51a0dccb0fdd7d47c367f84d8a0ca86bd57d675545419b7846147dc70";
     private static final String MARKER =
-        "repository/com/holin/android/hardening/hardening-gradle-plugin/1.3.0/" +
-            "hardening-gradle-plugin-1.3.0.jar";
+        "repository/com/holin/android/hardening/hardening-gradle-plugin/1.4.1/" +
+            "hardening-gradle-plugin-1.4.1.jar";
     private static final Pattern WRAPPER_VERSION =
         Pattern.compile("(?:^|/)gradle-([0-9]+(?:\\.[0-9]+){1,2})-(?:bin|all)\\.zip(?:$|[?#])");
     private static final Pattern CHECKSUM_LINE = Pattern.compile("([0-9a-f]{64})  (.+)");

@@ -51,6 +51,8 @@ enum class CodeExclusionReason {
     POTENTIAL_BEAN_INSTANCE_FIELD,
     HARDCODED_MEMBER_NAME,
     R8_HIERARCHY_KEEP_RULE,
+    R8_CLASS_MEMBER_KEEP_RULE,
+    R8_FIELD_KEEP_RULE,
 }
 
 data class CodeExclusion(val key: CodeSymbolKey, val reason: CodeExclusionReason, val evidence: String)
@@ -114,6 +116,8 @@ class OwnedCodeContractClassifier {
         exclusions += androidViewPropertyMethods(bytecode)
         exclusions += externalKeepContractExclusions(bytecode)
         exclusions += R8HierarchyKeepContractAnalyzer().exclusions(bytecode, effectiveR8Rules)
+        exclusions += R8ClassMemberKeepContractAnalyzer().exclusions(bytecode, effectiveR8Rules)
+        exclusions += R8FieldKeepContractAnalyzer().exclusions(bytecode, effectiveR8Rules)
         sourceAudit.externalNameCandidates.forEach { candidate ->
             exclusions += resolveExternalCandidate(bytecode, candidate)
         }

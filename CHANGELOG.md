@@ -1,3 +1,39 @@
+# Android Hardening Gradle Plugin 1.4.1
+
+Local delivery: 2026-10-12.
+
+- 新增通用 `assemble<Variant>Hardening` 与 `bundle<Variant>Hardening` 入口，放在 Gradle/Android Studio 的 `other` 分组，与普通 assemble/bundle 入口同级。
+- 新入口按所选 Variant 和所属模块启动隔离构建，自动传入 `androidHardening=true`，保留调用方其他项目属性；APK 和 AAB 使用各自的构建链，bundle 不生成 APK。
+- 保留 `hardeningAssemble<Variant>` / `hardeningBundle<Variant>` 及内部 `hardening` 分组，兼容原有显式开关调用；新入口继续执行原有任务图混跑校验。
+- 消费项目升级时应删除同名自定义入口，改为依赖插件提供的任务。分发版本、启动器、示例和 CI 产物名称同步为 1.4.1。
+
+Version 1.4.1 adds ungrouped `assemble<Variant>Hardening` and `bundle<Variant>Hardening` tasks for every selected variant.
+They enable hardening in isolated builds, preserve caller project properties, and target the owning module. Existing
+explicit opt-in tasks and task graph validation remain compatible. Remove duplicate consumer-defined entries on upgrade.
+
+---
+
+# Android Hardening Gradle Plugin 1.4.0
+
+Local delivery: 2026-09-29. No remote publication is performed by this change.
+
+- 1.3.1: 分类相似度报告与经过 Release 处理链的派生 Debug APK。
+- 1.3.2: 字符串、颜色和尺寸等资源逻辑名称的受控转换。
+- 1.3.3: PNG/WebP/JPEG 像素完全保持模式及独立渲染校验。
+- 1.3.4: 自有 assets 来源证明、图片/SFNT/JSON 格式等价转换。
+- 1.3.5: 私有 Java Activity 引用闭合改名与旧组件别名兼容。
+- 1.3.6: 可追踪 getString 和自有 AssetManager.open 场景的运行时适配。
+- 1.3.7: 保持 Native 加载内容的格式转换、依赖来源清单及白名单纯 Java 工具类重定位。
+- 1.3.8: 重复依赖输入去重、Kotlin metadata 保护、canonical mapping 逆向证明及图片校验性能优化；保留自有反射工厂创建的 ViewModel 泛型身份及构造函数，修复 R8 裁剪后私密媒体确认页启动崩溃。
+- 1.4.0: 分发版本、启动器和示例同步；保留旧默认行为、旧综合相似度口径与状态连续性。支持无 Git 元数据的消费项目：在外部临时目录复用 Git 原生忽略规则，不向消费项目写入 `.git`；损坏的仓库仍明确失败。
+
+新增策略均为显式启用。最小覆盖率参与构建门禁，无法证明安全或没有实际指纹收益的对象不会被计为有效转换。
+图片文件差异不等于视觉差异，Native 文件差异不等于机器码差异。mapping 沿用独立交付约定。
+
+See [controlled transformations](docs/controlled-transformations.md) for DSL, proof boundaries and applicability.
+
+---
+
 # Android Hardening Gradle Plugin 1.3.0
 
 Release date: 2026-09-16
@@ -47,7 +83,7 @@ Release date: 2026-09-16
 
 - Gradle Wrapper 完整性、环境检查、单元测试、functional TestKit、portable Maven ZIP 验证和 Offline TestKit 矩阵。
 - portable ZIP 连续两次强制构建逐字节一致；外层 sidecar、内部 `SHA256SUMS`、ZIP 安全和敏感内容扫描通过。
-- 使用最终 portable repository 完成 SingleLink Release AAB 生产构建检查；未安装应用、未运行设备测试、未上传应用。
+- 使用最终 portable repository 完成 reference-application Release AAB 生产构建检查；未安装应用、未运行设备测试、未上传应用。
 
 本 Release 只提供以下两个资产，不发布 Offline TestKit，不发布到 Maven Central 或 Gradle Plugin Portal：
 
@@ -97,7 +133,7 @@ Release date: 2026-09-16
 
 - Gradle Wrapper integrity, environment checks, unit tests, functional TestKit, portable Maven ZIP verification, and the Offline TestKit matrix.
 - Two forced portable ZIP builds were required to be byte-identical, with the outer sidecar, internal `SHA256SUMS`, ZIP safety checks, and sensitive-content scan all passing.
-- A SingleLink Release AAB production build was checked against the final portable repository. No app was installed, no device test was run, and no app artifact was uploaded.
+- A reference-application Release AAB production build was checked against the final portable repository. No app was installed, no device test was run, and no app artifact was uploaded.
 
 This Release contains only the following two assets. The Offline TestKit is not published, and nothing is published to Maven Central or the Gradle Plugin Portal:
 

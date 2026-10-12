@@ -19,6 +19,7 @@ import org.objectweb.asm.Opcodes
 class OwnedBytecodeInventoryBuilder(
     repositoryRoot: Path,
     private val ownership: HardeningOwnership,
+    private val canonicalClasses: Map<String, String> = emptyMap(),
 ) {
     private val root = repositoryRoot.toAbsolutePath().normalize()
 
@@ -141,12 +142,12 @@ class OwnedBytecodeInventoryBuilder(
     ): BytecodeClass {
         val collector = BytecodeCollector(modulePath, sourcePath)
         try {
-            ClassReader(bytes).accept(collector, ClassReader.SKIP_CODE or ClassReader.SKIP_DEBUG or ClassReader.SKIP_FRAMES)
+            ClassReader(com.holin.android.hardening.components.PreR8Relocation.transform(bytes, canonicalClasses)).accept(collector, ClassReader.SKIP_CODE or ClassReader.SKIP_DEBUG or ClassReader.SKIP_FRAMES)
         } catch (failure: IllegalArgumentException) {
             throw IllegalArgumentException("invalid bytecode class $expectedInternalName", failure)
         }
         val bytecode = collector.freeze().withSourceFile(readSourceFile(bytes))
-        require(bytecode.internalName == expectedInternalName) {
+        require(bytecode.internalName == (canonicalClasses[expectedInternalName] ?: expectedInternalName)) {
             "bytecode class name mismatch: entry $expectedInternalName, header ${bytecode.internalName}"
         }
         return bytecode

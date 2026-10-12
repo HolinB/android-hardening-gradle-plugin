@@ -2,7 +2,9 @@ package com.holin.android.hardening.inventory
 
 import java.io.ByteArrayOutputStream
 import java.nio.charset.StandardCharsets.UTF_8
+import java.nio.file.Files
 import java.nio.file.Path
+import java.util.Comparator
 import kotlin.concurrent.thread
 
 class GitIgnoreMatcher(
@@ -23,32 +25,49 @@ class GitIgnoreMatcher(
             byGitPath[gitPath] = absolute
         }
 
-        val process = ProcessBuilder(
-            gitExecutable,
-            "-C",
-            root.toString(),
-            "check-ignore",
-            "--no-index",
-            "--stdin",
-            "-z",
-        ).start()
+        if (GitRepositoryLocation.infoExclude(root, gitExecutable) != null) {
+            return checkIgnored(byGitPath, emptyList())
+        }
+        // Reuse Git's complete ignore semantics for source archives, without creating a consumer repository.
+        val metadata = Files.createTempDirectory("hardening-source-git-")
+        return try {
+            val init = ProcessBuilder(gitExecutable, "init", "--bare", "--template=", metadata.toString())
+                .redirectErrorStream(true).start()
+            val output = init.inputStream.use { it.readBytes().toString(UTF_8).trim() }
+            check(init.waitFor() == 0) { "temporary Git metadata initialization failed: $output" }
+            checkIgnored(byGitPath, listOf("--git-dir=$metadata", "--work-tree=$root", "-c", "core.bare=false"))
+        } finally {
+            Files.walk(metadata).use { paths -> paths.sorted(Comparator.reverseOrder()).forEach(Files::delete) }
+        }
+    }
+
+    private fun checkIgnored(byGitPath: Map<String, Path>, context: List<String>): Set<Path> {
+        val process = ProcessBuilder(listOf(gitExecutable, "-C", root.toString()) + context +
+            listOf("check-ignore", "--no-index", "--stdin", "-z")).start()
         val errorBytes = ByteArrayOutputStream()
-        val errorReader = thread(name = "git-check-ignore-stderr", isDaemon = true) {
+        val outputBytes = ByteArrayOutputStream()
+        val errorReader = thread(true, true, null, "git-check-ignore-stderr") {
             process.errorStream.use { input -> input.copyTo(errorBytes) }
         }
-        process.outputStream.use { input ->
-            byGitPath.keys.forEach { relative ->
-                input.write(relative.toByteArray(UTF_8))
-                input.write(0)
+        val outputReader = thread(true, true, null, "git-check-ignore-stdout") {
+            process.inputStream.use { input -> input.copyTo(outputBytes) }
+        }
+        val writeResult = runCatching {
+            process.outputStream.use { input ->
+                byGitPath.keys.forEach { relative ->
+                    input.write(relative.toByteArray(UTF_8))
+                    input.write(0)
+                }
             }
         }
-        val output = process.inputStream.use { it.readBytes() }
         val exitCode = process.waitFor()
         errorReader.join()
+        outputReader.join()
         check(exitCode == 0 || exitCode == 1) {
             "git check-ignore failed with exit $exitCode: ${errorBytes.toString(UTF_8).trim()}"
         }
-        return splitNullTerminated(output)
+        writeResult.getOrThrow()
+        return splitNullTerminated(outputBytes.toByteArray())
             .mapNotNullTo(linkedSetOf()) { ignoredPath -> byGitPath[ignoredPath] }
     }
 

@@ -4,7 +4,7 @@ This configuration-only example has an Android application module `:mobile`, two
 `:core` and `:media`, and the package root `com.example.demo`. It intentionally contains no application code,
 credentials, keystore, mapping, baseline, binary output, or production asset.
 
-1. Extract `hardening-gradle-plugin-1.3.0-portable-maven.zip` and verify its `SHA256SUMS` first.
+1. Extract `hardening-gradle-plugin-1.4.1-portable-maven.zip` and verify its `SHA256SUMS` first.
 2. Point `-PhardeningPluginRepo` at the extracted `repository` directory.
 3. Add your own production sources and owned images matched by the configured scopes. PNG demonstrates the new
    `images` DSL; WebP deliberately uses the legacy `webp` DSL to demonstrate 1.2.0 compatibility. Remove an include when
@@ -25,6 +25,10 @@ Explicit hardened entry after completing the application inputs:
 
 ```shell
 ./gradlew -PhardeningPluginRepo=.local/hardening/repository \
-  -PandroidHardening=true -PandroidHardeningFixedSeed=replace-for-reproducible-lab-only \
-  :mobile:hardeningBundleDemoQa
+  -PandroidHardeningFixedSeed=replace-for-reproducible-lab-only \
+  :mobile:bundleDemoQaHardening
 ```
+
+The plugin provides `assembleDemoQaHardening` and `bundleDemoQaHardening` in the `other` group. Both enable hardening
+in an isolated build automatically; the AAB entry does not generate an APK. Remove duplicate consumer-defined entries
+when upgrading. Legacy `hardeningAssembleDemoQa` and `hardeningBundleDemoQa` remain available with `-PandroidHardening=true`.

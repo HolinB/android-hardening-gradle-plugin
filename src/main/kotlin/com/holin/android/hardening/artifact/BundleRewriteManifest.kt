@@ -20,6 +20,9 @@ enum class BundleRewriteAction {
 enum class BundleSemanticVerifier {
     DEX_SEMANTICS,
     RESOURCE_SEMANTICS,
+    ASSET_FORMAT_EQUIVALENCE,
+    ASSET_RUNTIME_EQUIVALENCE,
+    NATIVE_LOAD_EQUIVALENCE,
 }
 
 data class BundleRewriteEntry(

@@ -29,10 +29,12 @@ abstract class CompareExternalHardeningAabTask : DefaultTask() {
     abstract val candidateAab: RegularFileProperty
     @get:OutputFile abstract val jsonReport: RegularFileProperty
     @get:OutputFile abstract val markdownReport: RegularFileProperty
+    @get:OutputFile abstract val categoryReport: RegularFileProperty
     @get:Internal abstract val artifactBoundary: DirectoryProperty
 
     init {
         outputs.upToDateWhen { false }
+        categoryReport.convention(project.layout.buildDirectory.file("reports/hardening/$name/category-report.json"))
     }
 
     @TaskAction
@@ -53,6 +55,10 @@ abstract class CompareExternalHardeningAabTask : DefaultTask() {
             analyzer.analyze(candidate),
         )
         val atomic = AtomicFiles()
+        atomic.replace(
+            boundary.prepareOutput(categoryReport.get().asFile.toPath()),
+            com.holin.android.hardening.similarity.CategoryArtifactReport.compare(reference, candidate).toByteArray(Charsets.UTF_8),
+        )
         atomic.replace(
             boundary.prepareOutput(jsonReport.get().asFile.toPath()),
             FullAabSimilarityReportCodec.encode(report).toByteArray(Charsets.UTF_8),

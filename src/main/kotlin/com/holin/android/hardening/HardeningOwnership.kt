@@ -197,15 +197,17 @@ class HardeningOwnership internal constructor(
         resourceDirectories: Set<Path>,
         manifestFiles: Set<Path>,
         sourceSets: List<ResolvedSourceSetRoots> = emptyList(),
+        assetDirectories: Set<Path> = emptySet(),
     ) {
         val javaDirectories: Set<Path> = normalizedPaths(javaDirectories)
         val kotlinDirectories: Set<Path> = normalizedPaths(kotlinDirectories)
         val resourceDirectories: Set<Path> = normalizedPaths(resourceDirectories)
         val manifestFiles: Set<Path> = normalizedPaths(manifestFiles)
+        val assetDirectories: Set<Path> = normalizedPaths(assetDirectories)
         val sourceSets: List<ResolvedSourceSetRoots> =
             Collections.unmodifiableList(sourceSets.map(ResolvedSourceSetRoots::snapshot))
         val all: Set<Path> = immutableSet(
-            this.javaDirectories + this.kotlinDirectories + this.resourceDirectories + this.manifestFiles,
+            this.javaDirectories + this.kotlinDirectories + this.resourceDirectories + this.manifestFiles + this.assetDirectories,
         )
 
         internal fun snapshot(): ResolvedSourceRoots = ResolvedSourceRoots(
@@ -214,6 +216,7 @@ class HardeningOwnership internal constructor(
             resourceDirectories,
             manifestFiles,
             sourceSets,
+            assetDirectories,
         )
 
         companion object {
@@ -227,6 +230,7 @@ class HardeningOwnership internal constructor(
                             setOf(module.resolve("src/$sourceSet/kotlin")),
                             setOf(module.resolve("src/$sourceSet/res")),
                             setOf(module.resolve("src/$sourceSet/AndroidManifest.xml")),
+                            setOf(module.resolve("src/$sourceSet/assets")),
                         )
                     },
                 )
@@ -239,6 +243,7 @@ class HardeningOwnership internal constructor(
                     sourceSets.flatMapTo(linkedSetOf(), ResolvedSourceSetRoots::resourceDirectories),
                     sourceSets.flatMapTo(linkedSetOf(), ResolvedSourceSetRoots::manifestFiles),
                     sourceSets,
+                    sourceSets.flatMapTo(linkedSetOf(), ResolvedSourceSetRoots::assetDirectories),
                 )
 
             private fun normalizedPaths(paths: Set<Path>): Set<Path> = immutableSet(
@@ -253,11 +258,13 @@ class HardeningOwnership internal constructor(
         kotlinDirectories: Set<Path>,
         resourceDirectories: Set<Path>,
         manifestFiles: Set<Path>,
+        assetDirectories: Set<Path> = emptySet(),
     ) {
         val javaDirectories: Set<Path> = normalizedPaths(javaDirectories)
         val kotlinDirectories: Set<Path> = normalizedPaths(kotlinDirectories)
         val resourceDirectories: Set<Path> = normalizedPaths(resourceDirectories)
         val manifestFiles: Set<Path> = normalizedPaths(manifestFiles)
+        val assetDirectories: Set<Path> = normalizedPaths(assetDirectories)
 
         internal fun snapshot(): ResolvedSourceSetRoots = ResolvedSourceSetRoots(
             name,
@@ -265,6 +272,7 @@ class HardeningOwnership internal constructor(
             kotlinDirectories,
             resourceDirectories,
             manifestFiles,
+            assetDirectories,
         )
 
         private companion object {
@@ -758,11 +766,12 @@ class HardeningOwnership internal constructor(
                 val sourceSetJava = resolveDirectories(project, sourceSet.java)
                 val sourceSetKotlin = resolveDirectories(project, sourceSet.kotlin)
                 val sourceSetResources = resolveDirectories(project, sourceSet.res)
+                val sourceSetAssets = resolveDirectories(project, sourceSet.assets)
                 val sourceSetManifests = linkedSetOf(moduleDirectory.resolve("src/$sourceSetName/AndroidManifest.xml"))
                     .apply {
                         if (sourceSetName == highestPrioritySourceSet) addAll(customManifests)
                     }
-                val resolved = sourceSetJava + sourceSetKotlin + sourceSetResources + sourceSetManifests
+                val resolved = sourceSetJava + sourceSetKotlin + sourceSetResources + sourceSetManifests + sourceSetAssets
                 resolved.forEach { validateProductionPath(modulePath, moduleDirectory, it) }
                 require(resolved.any(::containsProductionInput)) {
                     "ownership source set has no resolved production input for $modulePath: $sourceSetName"
@@ -773,6 +782,7 @@ class HardeningOwnership internal constructor(
                     sourceSetKotlin,
                     sourceSetResources,
                     sourceSetManifests,
+                    sourceSetAssets,
                 )
             }
             return ResolvedSourceRoots.fromSourceSets(resolvedSourceSets)

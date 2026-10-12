@@ -85,6 +85,24 @@ internal object OwnedSimilarityConfigurationIdentity {
         field("code.diversification.minimumSimHashDistance", extension.code.diversification.minimumSimHashDistance.get())
         field("code.diversification.maximumGrowth", extension.code.diversification.maximumGrowth.get())
         field("code.diversification.enforceMaximumGrowth", extension.code.diversification.enforceMaximumGrowth.get())
+        if (extension.dependencies.policy() != com.holin.android.hardening.dependencies.DependencyPolicy()) {
+            field("dependencies", extension.dependencies.policy().encode())
+        }
+        if (extension.nativeLibraries.policy() != com.holin.android.hardening.nativecode.NativePolicy()) {
+            field("nativeLibraries", extension.nativeLibraries.policy().encode())
+        }
+        if (extension.runtimeProtection.policy().enabled) {
+            field("runtimeProtection", extension.runtimeProtection.policy().encode())
+        }
+        if (extension.components.policy() != com.holin.android.hardening.components.ComponentPolicy()) {
+            field("components", extension.components.policy().encode())
+        }
+        if (extension.assets.policy() != com.holin.android.hardening.resources.AssetPolicy()) {
+            field("assets", extension.assets.policy().encode())
+        }
+        if (extension.resources.values.policy() != com.holin.android.hardening.resources.ValueResourcePolicy()) {
+            field("resources.values", extension.resources.values.policy().encode())
+        }
         field("resources.mode", extension.resources.mode.get().name)
         field("resources.renameLayouts", extension.resources.renameLayouts.get())
         field("resources.renameDrawables", extension.resources.renameDrawables.get())
@@ -92,6 +110,9 @@ internal object OwnedSimilarityConfigurationIdentity {
         field("resources.preserveResourceIds", extension.resources.preserveResourceIds.get())
         field("resources.reuseNamesAcrossBuilds", extension.resources.reuseNamesAcrossBuilds.get())
         field("resources.styleHashPolicy", extension.resources.styleHashPolicy.get().name)
+        if (extension.resources.bitmapDiversification.mode.get() != com.holin.android.hardening.resources.BitmapMode.LEGACY_PERCEPTUAL) {
+            field("resources.bitmapDiversification.mode", extension.resources.bitmapDiversification.mode.get().name)
+        }
         field("resources.bitmapDiversification.safeOnly", extension.resources.bitmapDiversification.safeOnly.get())
         field("resources.bitmapDiversification.minimumCoverage", extension.resources.bitmapDiversification.minimumCoverage.get())
         field("resources.bitmapDiversification.minimumSsim", extension.resources.bitmapDiversification.minimumSsim.get())
@@ -99,6 +120,9 @@ internal object OwnedSimilarityConfigurationIdentity {
             "resources.bitmapDiversification.minimumPHashDistance",
             extension.resources.bitmapDiversification.minimumPHashDistance.get(),
         )
+        if (extension.verification.debuggableApkVariants.get().isNotEmpty()) {
+            field("verification.debuggableApkVariants", extension.verification.debuggableApkVariants.get().sorted().joinToString(","))
+        }
         field("bundle.dependencyMetadata", extension.bundle.dependencyMetadata.get().name)
         field("bundle.structuralMetadataEntryCount", extension.bundle.structuralMetadataEntryCount.get())
         field("contracts.unresolvedAppReflection", extension.contracts.unresolvedAppReflection.get().name)
@@ -149,6 +173,7 @@ internal object OwnedSimilarityConfigurationIdentity {
                         "kotlin=${relativePaths(module, module.sourceRoots.kotlinDirectories)}",
                         "res=${relativePaths(module, module.sourceRoots.resourceDirectories)}",
                         "manifest=${relativePaths(module, module.sourceRoots.manifestFiles)}",
+                        "assets=${relativePaths(module, module.sourceRoots.assetDirectories)}",
                     ).joinToString(",", "${module.path}[", "]")
                 },
             )

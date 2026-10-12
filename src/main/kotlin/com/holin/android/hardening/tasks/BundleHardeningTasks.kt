@@ -71,6 +71,9 @@ abstract class RewriteHardeningBundleTask : DefaultTask() {
     abstract val enforceMaximumDexGrowth: Property<Boolean>
 
     @get:Input
+    abstract val bitmapMode: Property<com.holin.android.hardening.resources.BitmapMode>
+
+    @get:Input
     abstract val minimumImageCoverage: Property<Double>
 
     @get:Input
@@ -81,6 +84,27 @@ abstract class RewriteHardeningBundleTask : DefaultTask() {
 
     @get:Input
     abstract val dependencyMetadata: Property<DependencyMetadataMode>
+
+    @get:org.gradle.api.tasks.Optional @get:InputFile @get:PathSensitive(PathSensitivity.NONE)
+    abstract val runtimeClosure: RegularFileProperty
+
+    @get:org.gradle.api.tasks.Optional @get:InputFile @get:PathSensitive(PathSensitivity.NONE)
+    abstract val dependencyTransformationReport: RegularFileProperty
+
+    @get:org.gradle.api.tasks.InputFiles @get:PathSensitive(PathSensitivity.NONE)
+    abstract val preR8RelocationPlans: org.gradle.api.file.ConfigurableFileCollection
+
+    @get:Input abstract val nativeConfiguration: Property<String>
+
+    @get:Input
+    abstract val assetsConfiguration: Property<String>
+
+    @get:org.gradle.api.tasks.InputFiles
+    @get:PathSensitive(PathSensitivity.RELATIVE)
+    abstract val assetSourceFiles: org.gradle.api.file.ConfigurableFileCollection
+
+    @get:Input
+    abstract val valueResourcesConfiguration: Property<String>
 
     @get:Input
     abstract val structuralMetadataEntryCount: Property<Int>
@@ -93,6 +117,12 @@ abstract class RewriteHardeningBundleTask : DefaultTask() {
 
     @get:OutputFile
     abstract val semanticResults: RegularFileProperty
+
+    @get:OutputFile
+    abstract val controlledTransformationReport: RegularFileProperty
+
+    @get:OutputFile
+    abstract val categoryReport: RegularFileProperty
 
     @get:OutputFile
     abstract val planReport: RegularFileProperty
@@ -121,8 +151,29 @@ abstract class RewriteHardeningBundleTask : DefaultTask() {
     abstract val saltService: Property<InvocationSaltService>
 
     init {
+        valueResourcesConfiguration.convention(com.holin.android.hardening.resources.ValueResourcePolicy().encode())
+        nativeConfiguration.convention(com.holin.android.hardening.nativecode.NativePolicy().encode())
+        assetsConfiguration.convention(com.holin.android.hardening.resources.AssetPolicy().encode())
+        bitmapMode.convention(com.holin.android.hardening.resources.BitmapMode.LEGACY_PERCEPTUAL)
         applicationId.convention(namespace)
+        controlledTransformationReport.convention(project.layout.buildDirectory.file("reports/hardening/$name/controlled-transformations.json"))
+        categoryReport.convention(project.layout.buildDirectory.file("reports/hardening/$name/category-report.json"))
         outputs.upToDateWhen { false }
+    }
+
+    private fun dependencyResult(mapping: String): Any {
+        if (!dependencyTransformationReport.isPresent) return mapOf("enabled" to false)
+        val report = groovy.json.JsonSlurper().parseText(dependencyTransformationReport.get().asFile.readText()) as Map<*, *>
+        val names = mapping.lineSequence().filter { it.isNotBlank() && !it.startsWith('#') && !it.startsWith(' ') && " -> " in it }.map { it.substringBefore(" -> ") }.toSet()
+        val rows = (report["entries"] as List<*>).map { value ->
+            val row = value as Map<*, *>
+            val relocated = row["relocatedClasses"] as? Map<*, *> ?: emptyMap<String, String>()
+            val survivors = relocated.keys.filter { it.toString().replace('/', '.') in names }
+            row + mapOf("sourceIdentitiesInFinalMapping" to survivors, "mappedSourceCount" to survivors.size,
+                "effectiveClassRenameCount" to if (survivors.isEmpty()) 0 else null,
+                "finalDexBenefit" to if (survivors.isEmpty()) "NO_SURVIVING_SOURCE_CLASS_MAPPING_DO_NOT_CREDIT_RENAME" else "MAPPING_MAY_INCLUDE_INLINED_CLASSES_MEASURE_DEX_SEPARATELY")
+        }
+        return report + mapOf("entries" to rows)
     }
 
     @TaskAction
@@ -198,6 +249,14 @@ abstract class RewriteHardeningBundleTask : DefaultTask() {
                         preparedState.identity.fixedSeedSha256,
                         dependencyMetadata.get(),
                         structuralMetadataEntryCount.get(),
+                        com.holin.android.hardening.resources.ValueResourcePolicy.decode(valueResourcesConfiguration.get()),
+                        bitmapMode.get(),
+                        com.holin.android.hardening.resources.AssetPolicy.decode(assetsConfiguration.get()),
+                        runtimeClosure.orNull?.asFile?.readText()?.let(com.holin.android.hardening.runtime.RuntimeClosure::read),
+                        com.holin.android.hardening.nativecode.NativePolicy.decode(nativeConfiguration.get()),
+                        preR8RelocationPlans.files.sortedBy { it.path }.flatMap {
+                            com.holin.android.hardening.components.PreR8Relocation.readPlan(it.readText()).entries
+                        }.associate { it.toPair() },
                     ),
                 )
             }
@@ -233,14 +292,23 @@ abstract class RewriteHardeningBundleTask : DefaultTask() {
             }
             val semanticResults = saltService.get().withSalt { contentSalt ->
                 BundlePostRewriteSemanticVerifier().verify(
-                    ordinaryBundle = input,
-                    rewrittenBundle = output,
-                    manifest = rewrite.manifest,
-                    plan = plan.report,
-                    contentSalt = contentSalt,
-                    dexScope = plan.dexVerificationScope,
+                    input,
+                    output,
+                    rewrite.manifest,
+                    plan.report,
+                    contentSalt,
+                    plan.dexVerificationScope,
+                    plan.runtimeVerificationScope,
                 )
             }
+            AtomicFiles().replace(
+                paths.prepareOutput(categoryReport.get().asFile.toPath()),
+                com.holin.android.hardening.similarity.CategoryArtifactReport.compare(input, output).toByteArray(Charsets.UTF_8),
+            )
+            AtomicFiles().replace(
+                paths.prepareOutput(controlledTransformationReport.get().asFile.toPath()),
+                groovy.json.JsonOutput.prettyPrint(groovy.json.JsonOutput.toJson(plan.controlledTransformations + mapOf("dependencies" to dependencyResult(mappingText)))).toByteArray(Charsets.UTF_8),
+            )
             BundleRewriteManifestCodec.write(manifestOutput, rewrite.manifest)
             BundleSemanticVerificationResultCodec.write(semanticOutput, semanticResults)
             AtomicFiles().replace(

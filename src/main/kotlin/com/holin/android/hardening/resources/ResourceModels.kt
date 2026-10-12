@@ -13,6 +13,11 @@ enum class ResourceType(val directoryName: String) {
     ANIM("anim"),
     ANIMATOR("animator"),
     XML("xml"),
+    STRING("string"),
+    COLOR("color"),
+    DIMEN("dimen");
+
+    val isValue: Boolean get() = this in setOf(STRING, COLOR, DIMEN)
 }
 
 enum class ResourceOrigin {

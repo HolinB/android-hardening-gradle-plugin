@@ -78,6 +78,7 @@ internal object HardeningWiringGate {
             "signHardening${suffix}Bundle",
             "validateHardening${suffix}Bundle",
             "assembleHardening${suffix}UniversalApk",
+            "deriveHardening${suffix}DebuggableApk",
             "assembleOrdinary${suffix}UniversalApk",
         ).any { registeredName -> registeredName.equals(taskName, ignoreCase = true) }
     }
