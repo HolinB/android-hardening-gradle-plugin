@@ -74,10 +74,9 @@ dependencies {
 }
 
 androidHardening {
-    enabled.set(providers.gradleProperty("androidHardening").map(String::toBoolean).orElse(false))
     projectKey.set("demo")
 
-    variants.include("demoQa")
+    targetVariants("demoQa")
 
     ownership {
         module(":mobile") {
@@ -100,7 +99,7 @@ androidHardening {
         }
     }
 
-    rules {
+    proguardRules {
         sourceFiles.from("proguard-rules.pro")
         preserveExactRules.from("hardening-preserve-exact.pro")
         additionalRules.from("hardening-additional.pro")
@@ -110,22 +109,12 @@ androidHardening {
         storeDirectory.set(rootProject.layout.projectDirectory.dir(".hardening/mappings"))
     }
 
-    reproducibility {
-        fixedSeed.set(providers.gradleProperty("androidHardeningFixedSeed"))
-    }
-
-    bundle {
+    bundleMetadata {
         dependencyMetadata.set(OMIT)
         structuralMetadataEntryCount.set(16)
     }
 
-    signing {
-        reuseVariantSigningConfig.set(true)
-    }
-
-    legacyPlugins {
-        mode.set(PRESERVE_UNMANAGED)
-        verifyCompatibility.set(true)
+    existingPlugins {
         baselineFile.set(rootProject.layout.projectDirectory.file("legacy/legacy-plugin-baseline.json"))
         plugin("neutralLegacy") {
             pluginId.set("com.example.legacy")

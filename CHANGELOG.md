@@ -1,3 +1,22 @@
+# Android Hardening Gradle Plugin 1.4.2
+
+Local delivery: 2026-10-12.
+
+- 简化 `androidHardening` DSL：总开关和固定种子分别优先读取 `-PandroidHardening` 与
+  `-PandroidHardeningFixedSeed`；旧属性保留为 deprecated fallback。
+- 将 v1 的 mapping、命名、R8/源码/字符串/DEX、资源改名、契约、签名复用、Benchmark、旧插件兼容校验和设备观察策略收归插件内部固定策略，继续校验旧配置的唯一合法值并保持配置身份字段稳定。
+- 增加 `targetVariants`、`proguardRules`、`existingPlugins`、`bundleMetadata`、`similarityCheck`、`deviceTest`、`dependencyProtection`、`nativeProtection`、`assetProtection` 和 `componentProtection` 语义别名；旧方法继续兼容并标记 deprecated。复杂 `ownership` 表达保持完整。
+- `proguardRules(...)` 支持直接传入已有规则文件，同时保留详细配置块；`code` 的可调阈值继续开放，旧设备显式覆盖兼容保留。
+- 相似度配置只需声明 baseline 目录和相对改善阈值；设备配置只需覆盖序列号、application ID 或启动 Activity，唯一设备选择、Variant/Manifest 回退和 30 秒观察由插件完成。
+- 发布包、启动器、示例、文档和发布契约同步到 1.4.2；Nearish 使用新 DSL 别名验证任务注册和真实 Hardening 构建链。
+
+Version 1.4.2 simplifies the consumer DSL while preserving the 1.4.1 task and artifact contract. The plugin now owns the
+v1 fixed policies, reads `-PandroidHardening` and `-PandroidHardeningFixedSeed` first, and keeps the old properties as
+deprecated compatibility fallbacks. Semantic aliases cover variants, ProGuard rules, existing plugins, bundle metadata,
+similarity, device acceptance, dependencies, native libraries, assets, and components; the full ownership DSL remains.
+
+---
+
 # Android Hardening Gradle Plugin 1.4.1
 
 Local delivery: 2026-10-12.

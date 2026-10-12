@@ -1,6 +1,6 @@
-# Android Hardening Gradle Plugin 1.4.1
+# Android Hardening Gradle Plugin 1.4.2
 
-[Chinese](README.md) | [1.4.1 changelog](CHANGELOG.md) | [Controlled transformations](docs/controlled-transformations.md)
+[Chinese](README.md) | [1.4.2 changelog](CHANGELOG.md) | [Controlled transformations](docs/controlled-transformations.md)
 
 `com.holin.android.hardening` is a local binary Gradle plugin for Android application variants. Within explicitly
 selected variants and explicitly declared code/resource ownership, it reuses R8 mappings, assigns stable owned names,
@@ -39,15 +39,15 @@ Obtain the ZIP and published SHA-256 from the same Release. Verify the outer arc
 name alone.
 
 ```shell
-shasum -a 256 -c hardening-gradle-plugin-1.4.1-portable-maven.zip.sha256
-mkdir -p .local/hardening-1.4.1
-unzip -q hardening-gradle-plugin-1.4.1-portable-maven.zip -d .local/hardening-1.4.1
-(cd .local/hardening-1.4.1 && shasum -a 256 -c SHA256SUMS)
+shasum -a 256 -c hardening-gradle-plugin-1.4.2-portable-maven.zip.sha256
+mkdir -p .local/hardening-1.4.2
+unzip -q hardening-gradle-plugin-1.4.2-portable-maven.zip -d .local/hardening-1.4.2
+(cd .local/hardening-1.4.2 && shasum -a 256 -c SHA256SUMS)
 ```
 
-On Linux, use `sha256sum -c hardening-gradle-plugin-1.4.1-portable-maven.zip.sha256` for the outer ZIP and
+On Linux, use `sha256sum -c hardening-gradle-plugin-1.4.2-portable-maven.zip.sha256` for the outer ZIP and
 `sha256sum -c SHA256SUMS` for the extracted content. In PowerShell, compare
-`Get-FileHash .\hardening-gradle-plugin-1.4.1-portable-maven.zip -Algorithm SHA256` with the Release value. When Gradle
+`Get-FileHash .\hardening-gradle-plugin-1.4.2-portable-maven.zip -Algorithm SHA256` with the Release value. When Gradle
 dependency verification is enabled, review and place the ZIP's `verification-metadata.xml` at
 `gradle/verification-metadata.xml` in the consumer.
 
@@ -65,9 +65,9 @@ install/run an app, or notify another system. After local review and explicit au
 manual command run outside Actions:
 
 ```shell
-gh release upload v1.4.1 \
-  build/distributions/hardening-gradle-plugin-1.4.1-portable-maven.zip \
-  build/distributions/hardening-gradle-plugin-1.4.1-portable-maven.zip.sha256
+gh release upload v1.4.2 \
+  build/distributions/hardening-gradle-plugin-1.4.2-portable-maven.zip \
+  build/distributions/hardening-gradle-plugin-1.4.2-portable-maven.zip.sha256
 ```
 
 ## The `hardeningw` launcher
@@ -75,7 +75,7 @@ gh release upload v1.4.1 \
 The launcher requires `--project-dir`, a `--` separator, and at least one argument for the consumer Wrapper. It validates
 JDK/Wrapper/SDK prerequisites, downloads and checks the ZIP against the pinned Release SHA-256 and internal
 `SHA256SUMS`, atomically installs a versioned cache, and injects
-`-PhardeningPluginRepo=<cache>/1.4.1/repository`. When download is unavailable and it runs from this source repository,
+`-PhardeningPluginRepo=<cache>/1.4.2/repository`. When download is unavailable and it runs from this source repository,
 it can fall back to the local `packagePortableHardeningPlugin` task.
 
 POSIX:
@@ -137,7 +137,7 @@ pluginManagement {
 plugins {
     id("com.android.application") version "8.13.2" apply false
     id("org.jetbrains.kotlin.android") version "2.3.0" apply false
-    id("com.holin.android.hardening") version "1.4.1" apply false
+    id("com.holin.android.hardening") version "1.4.2" apply false
 }
 ```
 
@@ -153,7 +153,7 @@ plugins {
 Direct invocation:
 
 ```shell
-./gradlew -PhardeningPluginRepo=.local/hardening-1.4.1/repository \
+./gradlew -PhardeningPluginRepo=.local/hardening-1.4.2/repository \
   :mobile:bundleDemoQaHardening
 ```
 
@@ -162,13 +162,13 @@ review and capture a genuine legacy-plugin baseline. The neutral `com.example.le
 used for a production build. Run these commands separately so ordinary and hardened artifacts are not conflated:
 
 ```shell
-./gradlew -PhardeningPluginRepo=.local/hardening-1.4.1/repository \
+./gradlew -PhardeningPluginRepo=.local/hardening-1.4.2/repository \
   -PandroidHardening=false :mobile:bundleDemoQa
-./gradlew -PhardeningPluginRepo=.local/hardening-1.4.1/repository \
+./gradlew -PhardeningPluginRepo=.local/hardening-1.4.2/repository \
   :mobile:bundleDemoQaHardening
-./gradlew -PhardeningPluginRepo=.local/hardening-1.4.1/repository \
+./gradlew -PhardeningPluginRepo=.local/hardening-1.4.2/repository \
   -PandroidHardening=true :mobile:captureHardeningBaselineDemoQa
-./gradlew -PhardeningPluginRepo=.local/hardening-1.4.1/repository \
+./gradlew -PhardeningPluginRepo=.local/hardening-1.4.2/repository \
   -PandroidHardening=true :mobile:compareHardeningDemoQa
 ```
 
@@ -178,19 +178,19 @@ after configuration identity changes. Run `:mobile:assembleDemoQaHardening` sepa
 
 ## Full `androidHardening` Kotlin DSL
 
-This block covers the complete v1 public surface. Replace paths, plugin declarations, and the migration descriptor with
-real reviewed consumer inputs. v1 requires `legacyPlugins.verifyCompatibility=true`, a real baseline, and at least one
-declared and actually applied legacy plugin; there is no greenfield bypass. Automatic state migration may be disabled,
-but when enabled it requires a real captured descriptor rather than copied placeholder content.
+This block covers the recommended v1 public surface. Replace paths, plugin declarations, and the migration descriptor with
+real reviewed consumer inputs. The plugin keeps legacy-plugin compatibility verification enabled internally and still
+requires a real baseline plus at least one declared and actually applied legacy plugin; there is no greenfield bypass.
+Use `-PandroidHardening` and `-PandroidHardeningFixedSeed` for the switch and fixed seed. The old `enabled` property and
+`reproducibility.fixedSeed` remain only as deprecated fallbacks. Automatic state migration may be disabled, but when enabled
+it requires a real captured descriptor rather than copied placeholder content.
+
+Existing rule files can use `proguardRules("proguard-rules.pro", "library-rules.pro")`; the block form below supports exact preservation and additional rules. `code { diversification { ... } }` still configures coverage, distance, and growth thresholds. Legacy disabled device fallbacks remain compatible when their explicit overrides are supplied; disabling automatic device selection requires a serial.
 
 ```kotlin
 androidHardening {
-    enabled.set(providers.gradleProperty("androidHardening").map(String::toBoolean).orElse(false))
     projectKey.set("demo")
-
-    variants {
-        include("demoQa")
-    }
+    targetVariants("demoQa")
 
     ownership {
         generatedPackagePrefixes.add("com.example.demo.generated")
@@ -222,7 +222,7 @@ androidHardening {
         }
     }
 
-    rules {
+    proguardRules {
         sourceFiles.from("proguard-rules.pro")
         preserveExactRules.from("hardening-preserve-exact.pro")
         additionalRules.from("hardening-additional.pro")
@@ -230,97 +230,61 @@ androidHardening {
 
     mapping {
         storeDirectory.set(rootProject.layout.projectDirectory.dir(".hardening/mappings"))
-        reusePrevious.set(true)
-        missingPolicy.set(RECREATE)
-        keepHistory.set(true)
-        quarantineInvalid.set(true)
         lockTimeoutSeconds.set(60)
     }
 
-    reproducibility {
-        fixedSeed.set(providers.gradleProperty("androidHardeningFixedSeed"))
+    // These aliases keep the configurable protection scope readable. Each block is optional.
+    dependencyProtection {
+        enabled.set(true)
+    }
+    nativeProtection {
+        enabled.set(true)
+        includes.add("base/lib/**/*.so")
+    }
+    assetProtection {
+        enabled.set(true)
+        includes.set(setOf("owned/images/*.png"))
+        images.set(true)
+    }
+    componentProtection {
+        enabled.set(true)
+        includes.add("com.example.demo.MainActivity")
     }
 
-    naming {
-        strategy.set(TYPED_PSEUDOWORDS)
-        renamePackages.set(true)
-        reuseAcrossBuilds.set(true)
-    }
-
+    // Coverage, distance, and growth thresholds remain configurable.
     code {
-        engine.set(R8)
-        preserveLineNumbers.set(true)
-        sourceFileMode.set(PSEUDONYMIZE)
-        stringFog.set(PRESERVE_CURRENT)
         diversification {
-            mode.set(DEX)
-            contentSalt.set(FRESH_PER_BUILD)
             minimumCoverage.set(0.50)
             minimumSimHashDistance.set(4)
             maximumGrowth.set(0.05)
             enforceMaximumGrowth.set(false)
         }
     }
-
     resources {
-        mode.set(RENAME_AND_AUDIT)
-        renameLayouts.set(true)
-        renameDrawables.set(true)
-        renameStyles.set(true)
-        preserveResourceIds.set(true)
-        reuseNamesAcrossBuilds.set(true)
-        styleHashPolicy.set(RESOURCE_TABLE_ONLY)
         bitmapDiversification {
-            safeOnly.set(true)
             minimumCoverage.set(0.90)
             minimumPHashDistance.set(11)
             minimumSsim.set(0.995)
         }
     }
 
-    bundle {
+    bundleMetadata {
         dependencyMetadata.set(OMIT)
         structuralMetadataEntryCount.set(16)
     }
 
-    contracts {
-        unresolvedAppReflection.set(FAIL_BUILD)
-        unresolvedResourceLookup.set(FAIL_BUILD)
-        externalNames.set(PRESERVE_AND_REPORT)
-    }
-
-    signing {
-        reuseVariantSigningConfig.set(true)
-    }
-
-    benchmark {
-        mode.set(REPORT_ONLY)
-    }
-
-    similarity {
-        mode.set(OWNED_AAB_APK)
+    similarityCheck {
         baselineDirectory.set(rootProject.layout.projectDirectory.dir(".hardening/baselines"))
         minimumImprovementPoints.set(0.01)
-        enforceRelativeImprovement.set(true)
-        maximumOverallExclusive.set(75.0)
-        enforceMaximumOverall.set(false)
-        maximumAabGrowth.set(0.10)
-        enforceMaximumAabGrowth.set(false)
     }
 
-    deviceAcceptance {
-        autoSelectSingleDevice.set(true)
+    deviceTest {
         serial.set(providers.gradleProperty("androidHardeningDeviceSerial"))
         applicationId.set(providers.gradleProperty("androidHardeningApplicationId"))
-        applicationIdFromVariant.set(true)
         launchActivity.set(providers.gradleProperty("androidHardeningLaunchActivity"))
-        launchActivityFromManifest.set(true)
-        stabilitySeconds.set(30)
     }
 
-    legacyPlugins {
-        mode.set(PRESERVE_UNMANAGED)
-        verifyCompatibility.set(true)
+    existingPlugins {
         baselineFile.set(rootProject.layout.projectDirectory.file("legacy/legacy-plugin-baseline.json"))
         plugin("neutralLegacy") {
             pluginId.set("com.example.legacy")
@@ -388,9 +352,9 @@ reflection or resource lookup. `preserveExactRules` is for reviewed rules that m
 
 ## Generated task table (example variant `demoQa`)
 
-Every `variants.include("...")` generates the same family. The task suffix for `demoQa` is `DemoQa`.
+Every `targetVariants("...")` call generates the same family. The task suffix for `demoQa` is `DemoQa`.
 
-Version 1.4.1 adds `assemble<Variant>Hardening` and `bundle<Variant>Hardening` to Android Studio's `other` group.
+Since 1.4.1, the plugin provides `assemble<Variant>Hardening` and `bundle<Variant>Hardening` to Android Studio's `other` group.
 Run them directly without an opt-in property. Each starts an isolated build from the project root, preserves the caller's
 `-P` properties, and overrides only `androidHardening=true`. APK and AAB entries delegate to the owning module's existing
 hardening tasks. The AAB entry does not generate an APK. Internal tasks remain in `hardening`.
@@ -438,12 +402,11 @@ For variant name `demoQa`, the path component remains `demoQa`:
 - `.hardening/mappings/<projectKey>/<variant>/current/`, `history/`, `quarantine/`, and `locks/`
 - `.hardening/baselines/<projectKey>/<variant>/v1/`
 
-On a first run with no old mapping, `missingPolicy=RECREATE` starts a new lineage at generation 0. With no history there is
-no continuity to inherit, so the first build is not proof of cross-release stability. Later, `reusePrevious=true` supplies
-the previous app-owned mapping as an R8 `-applymapping` input. Verification checks mapping continuity symbol by symbol and
-uses the current official R8 Retrace to recover class, method, and line. With `quarantineInvalid=true`, corrupt or
-identity-mismatched current state is isolated under a content hash; verified state is archived in immutable `history` by
-AAB identity.
+On a first run with no old mapping, the plugin's fixed `RECREATE` policy starts a new lineage at generation 0. With no history there is no continuity to inherit, so the
+first build is not proof of cross-release stability. Later, the plugin reuses the previous valid app-owned mapping as an R8
+`-applymapping` input. Verification checks mapping continuity symbol by symbol and uses the current official R8 Retrace to
+recover class, method, and line. Invalid or identity-mismatched state is isolated under a content hash; verified state is
+archived in immutable `history` by AAB identity.
 
 For Schema v2 `transformation-report.json`, inspect each `resources.images[]` `status`, `reason`, dimensions,
 `alphaPreserved`, `ssim`, `pHashDistance`, and `nearestCorpusPHashDistance` before reviewing `imageFormatCoverage` and
@@ -467,9 +430,9 @@ packages when source, toolchain, dependencies, signing material, configuration, 
 across clean roots. A fixed seed is not a secret and cannot neutralize environmental/input differences; never treat a
 test seed as a production secret or security control.
 
-`signing.reuseVariantSigningConfig=true` reuses the selected variant's signing material. The plugin verifies certificate
+The plugin always reuses the selected variant's signing material in v1. The plugin verifies certificate
 and signature relationships across the hardened AAB, universal APK, and ordinary comparison APK. Neither this repository
-nor the example ships a keystore or credentials. With no `deviceAcceptance.serial`, `hardeningRunDemoQa` auto-selects only
+nor the example ships a keystore or credentials. With no `deviceTest.serial`, `hardeningRunDemoQa` auto-selects only
 when exactly one online device exists; zero or multiple devices fail. It derives application ID and launch activity from
 the variant/merged manifest, installs the APK, and observes it for 30 seconds.
 
@@ -484,7 +447,7 @@ Prepare the versioned plugin cache and all consumer dependencies in a controlled
 
 The portable ZIP excludes AGP/Kotlin, so extracting it alone does not make the whole consumer build offline. Repository
 maintainers can validate the checksum-pinned matrix with `prepareOfflineTestKitEnvironment`,
-`packageOfflineHardeningTestKit`, and `verifyOfflineHardeningTestKit`. The 1.4.1 GitHub Release does not attach the Offline
+`packageOfflineHardeningTestKit`, and `verifyOfflineHardeningTestKit`. The 1.4.2 GitHub Release does not attach the Offline
 TestKit. Consumers must prepare and verify their own Gradle/AGP/Kotlin/AAPT2 and application dependencies; do not let an
 offline run fall back to an unknown host cache or network.
 
@@ -500,5 +463,5 @@ offline run fall back to an unknown host cache or network.
 - **Mapping continuity/Retrace failure:** preserve the report and `.hardening/mappings`, then inspect R8 version, prior mapping, configuration identity, and quarantine. Do not overwrite current/history manually.
 - **Baseline missing or mismatched:** explicitly recapture from reviewed ordinary/hardened inputs. Never copy another project or variant's baseline.
 - **Signing failure:** configure real signing for the selected variant; never commit credentials or a keystore.
-- **Device selection failure:** connect exactly one authorized device or set `deviceAcceptance.serial`; enter device work only through `hardeningRun<Variant>`.
+- **Device selection failure:** connect exactly one authorized device or set `deviceTest.serial`; enter device work only through `hardeningRun<Variant>`.
 - **Similarity did not improve:** inspect owned-entry contributions and growth in JSON/Markdown. Threshold tuning is not proof of anti-reverse-engineering or detector evasion.

@@ -90,7 +90,7 @@ fun normalizedConcreteDependencyClosure(
 }
 
 group = "com.holin.android.hardening"
-version = "1.4.1"
+version = "1.4.2"
 
 base {
     archivesName.set("hardening-gradle-plugin")

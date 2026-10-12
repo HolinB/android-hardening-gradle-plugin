@@ -14,7 +14,7 @@ The existing transformation defaults remain compatible with 1.3.0. Each new poli
 | 1.3.8 | Integration and compatibility | Canonical mapping is checked against the compiler mapping with an inverse proof before compiler metadata is detached. Repeated resolved artifact records are deduplicated by actual source path. Owned ViewModel factory classes retain generic identities and constructors under R8, while their names may be obfuscated. |
 | 1.4.0 | Final distribution | Source archives without Git metadata use an external temporary Git context for native ignore semantics. No consumer `.git` is created; damaged repositories still fail. The final release contains production implementation and pre-existing tests; temporary verification code is excluded from source and portable distributions. |
 
-Example configuration (only include scopes verified for the consuming application):
+Example configuration using the 1.4.2 aliases (only include scopes verified for the consuming application):
 
 ```kotlin
 androidHardening {
@@ -30,13 +30,13 @@ androidHardening {
             minimumPHashDistance.set(0)
         }
     }
-    assets {
+    assetProtection {
         enabled.set(true)
         includes.add("owned/images/*.png")
         images.set(true)
         minimumCoverage.set(1.0)
     }
-    components {
+    componentProtection {
         enabled.set(true)
         includes.add("com.example.app.InternalActivity")
         minimumCoverage.set(1.0)
@@ -48,12 +48,12 @@ androidHardening {
         assetReaders.add("com/example/app/Reader#load(Landroid/content/res/AssetManager;)V")
         minimumAssetCoverage.set(1.0)
     }
-    nativeLibraries {
+    nativeProtection {
         enabled.set(true)
         includes.add("base/lib/*/*.so")
         minimumCoverage.set(1.0)
     }
-    dependencies {
+    dependencyProtection {
         enabled.set(true)
         includes.add("com.example:pure-utility:1.0")
         minimumCoverage.set(1.0)
@@ -61,7 +61,7 @@ androidHardening {
 }
 ```
 
-An enabled dependencies block with an empty allowlist produces provenance only. It does not relocate SDKs. The report records original artifact hashes, effective class artifact hashes and separate derived artifacts. Gradle's dependency cache is read-only to this implementation. Pure-utility eligibility excludes state, construction, serialization, native methods, service/resource/signature contracts, reflection, Kotlin metadata, type escapes and unsupported calls. R8 may remove or inline an eligible class; the final report does not count its pre-R8 alias as an effective surviving class rename without DEX evidence.
+An enabled dependencyProtection block with an empty allowlist produces provenance only. It does not relocate SDKs. The report records original artifact hashes, effective class artifact hashes and separate derived artifacts. Gradle's dependency cache is read-only to this implementation. Pure-utility eligibility excludes state, construction, serialization, native methods, service/resource/signature contracts, reflection, Kotlin metadata, type escapes and unsupported calls. R8 may remove or inline an eligible class; the final report does not count its pre-R8 alias as an effective surviving class rename without DEX evidence.
 
 Runtime protection excludes XML or framework/SDK string readers, rich text, plurals, arrays, aliases, unresolved resource lookup, unknown asset readers, openFd, mmap, Native and WebView asset access. A zero minimum allows an explicitly reported skip. A positive minimum fails when the requested scope cannot be proven closed. This policy does not weaken the existing resource or DEX semantic verifiers.
 

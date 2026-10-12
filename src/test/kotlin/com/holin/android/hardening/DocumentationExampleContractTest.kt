@@ -45,7 +45,7 @@ class DocumentationExampleContractTest {
         assertTrue(settings.contains("hardeningPluginRepo"), "example must accept the extracted Maven repository")
         assertTrue(settings.contains("include(\":mobile\", \":core\", \":media\")"), "example modules are incomplete")
         assertFalse(allBuildLogic.contains("includeBuild"), "example must not substitute plugin source")
-        assertTrue(rootBuild.contains("id(\"com.holin.android.hardening\") version \"1.4.1\" apply false"))
+        assertTrue(rootBuild.contains("id(\"com.holin.android.hardening\") version \"1.4.2\" apply false"))
         assertTrue(mobileBuild.contains("id(\"com.holin.android.hardening\")"))
         REQUIRED_EXAMPLE_SNIPPETS.forEach { snippet ->
             assertTrue(mobileBuild.contains(snippet), "mobile example is missing: $snippet")
@@ -215,9 +215,7 @@ class DocumentationExampleContractTest {
             "media/src/main/AndroidManifest.xml",
         )
         val REQUIRED_EXAMPLE_SNIPPETS = listOf(
-            "providers.gradleProperty(\"androidHardening\")",
-            "providers.gradleProperty(\"androidHardeningFixedSeed\")",
-            "variants.include(\"demoQa\")",
+            "targetVariants(\"demoQa\")",
             "module(\":mobile\")",
             "module(\":core\")",
             "module(\":media\")",
@@ -230,9 +228,9 @@ class DocumentationExampleContractTest {
             "preserveExactRules.from(\"hardening-preserve-exact.pro\")",
             "additionalRules.from(\"hardening-additional.pro\")",
             "storeDirectory.set(rootProject.layout.projectDirectory.dir(\".hardening/mappings\"))",
-            "reuseVariantSigningConfig.set(true)",
             "DEMO_SIGNING_STORE_FILE",
-            "verifyCompatibility.set(true)",
+            "bundleMetadata {",
+            "existingPlugins {",
             "baselineFile.set(rootProject.layout.projectDirectory.file(\"legacy/legacy-plugin-baseline.json\"))",
             "plugin(\"neutralLegacy\")",
             "autoMigrateLegacyState.set(false)",

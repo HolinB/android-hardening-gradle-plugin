@@ -1,6 +1,6 @@
-# Android Hardening Gradle Plugin 1.4.1
+# Android Hardening Gradle Plugin 1.4.2
 
-[English](README.en.md) | [1.4.1 更新日志](CHANGELOG.md) | [受控转换与适用性](docs/controlled-transformations.md)
+[English](README.en.md) | [1.4.2 更新日志](CHANGELOG.md) | [受控转换与适用性](docs/controlled-transformations.md)
 
 `com.holin.android.hardening` 是一个面向 Android Application Variant 的本地二进制 Gradle 插件。它在显式授权的
 Variant 和显式声明的代码/资源所有权范围内，复用 R8 映射、稳定化自有名称、审计外部契约、改写并重新签名 AAB，
@@ -35,15 +35,15 @@ Hardening 任务。
 先从同一 Release 获取 ZIP 和发布的 SHA-256，再进行解压。不要只相信文件名。
 
 ```shell
-shasum -a 256 -c hardening-gradle-plugin-1.4.1-portable-maven.zip.sha256
-mkdir -p .local/hardening-1.4.1
-unzip -q hardening-gradle-plugin-1.4.1-portable-maven.zip -d .local/hardening-1.4.1
-(cd .local/hardening-1.4.1 && shasum -a 256 -c SHA256SUMS)
+shasum -a 256 -c hardening-gradle-plugin-1.4.2-portable-maven.zip.sha256
+mkdir -p .local/hardening-1.4.2
+unzip -q hardening-gradle-plugin-1.4.2-portable-maven.zip -d .local/hardening-1.4.2
+(cd .local/hardening-1.4.2 && shasum -a 256 -c SHA256SUMS)
 ```
 
-Linux 可使用 `sha256sum -c hardening-gradle-plugin-1.4.1-portable-maven.zip.sha256` 校验外层 ZIP，并使用
+Linux 可使用 `sha256sum -c hardening-gradle-plugin-1.4.2-portable-maven.zip.sha256` 校验外层 ZIP，并使用
 `sha256sum -c SHA256SUMS` 校验解压内容。PowerShell 可用
-`Get-FileHash .\hardening-gradle-plugin-1.4.1-portable-maven.zip -Algorithm SHA256` 对照 Release 值。
+`Get-FileHash .\hardening-gradle-plugin-1.4.2-portable-maven.zip -Algorithm SHA256` 对照 Release 值。
 如启用 Gradle dependency verification，可审阅后把 ZIP 中的 `verification-metadata.xml` 放到消费项目的
 `gradle/verification-metadata.xml`。
 
@@ -59,16 +59,16 @@ Maven 仓库、不创建 Release/tag、不安装或运行 App，也不通知外�
 仍由 Actions 之外的本地手动命令执行：
 
 ```shell
-gh release upload v1.4.1 \
-  build/distributions/hardening-gradle-plugin-1.4.1-portable-maven.zip \
-  build/distributions/hardening-gradle-plugin-1.4.1-portable-maven.zip.sha256
+gh release upload v1.4.2 \
+  build/distributions/hardening-gradle-plugin-1.4.2-portable-maven.zip \
+  build/distributions/hardening-gradle-plugin-1.4.2-portable-maven.zip.sha256
 ```
 
 ## `hardeningw` 启动器
 
 启动器要求 `--project-dir`、`--` 分隔符和至少一个转发给消费项目 Wrapper 的参数。它校验 JDK/Wrapper/SDK，下载并按固定
 Release SHA-256 和内部 `SHA256SUMS` 验证 ZIP，原子写入版本缓存，再注入
-`-PhardeningPluginRepo=<cache>/1.4.1/repository`。下载不可用时，在插件源码目录运行还可回退到本地
+`-PhardeningPluginRepo=<cache>/1.4.2/repository`。下载不可用时，在插件源码目录运行还可回退到本地
 `packagePortableHardeningPlugin`。
 
 POSIX:
@@ -128,7 +128,7 @@ pluginManagement {
 plugins {
     id("com.android.application") version "8.13.2" apply false
     id("org.jetbrains.kotlin.android") version "2.3.0" apply false
-    id("com.holin.android.hardening") version "1.4.1" apply false
+    id("com.holin.android.hardening") version "1.4.2" apply false
 }
 ```
 
@@ -144,7 +144,7 @@ plugins {
 直接运行：
 
 ```shell
-./gradlew -PhardeningPluginRepo=.local/hardening-1.4.1/repository \
+./gradlew -PhardeningPluginRepo=.local/hardening-1.4.2/repository \
   :mobile:bundleDemoQaHardening
 ```
 
@@ -152,13 +152,13 @@ plugins {
 `com.example.legacy` 只是占位，不能直接用于生产构建。以下命令分别调用，不把普通包和 Hardening 包混为一个构建结果：
 
 ```shell
-./gradlew -PhardeningPluginRepo=.local/hardening-1.4.1/repository \
+./gradlew -PhardeningPluginRepo=.local/hardening-1.4.2/repository \
   -PandroidHardening=false :mobile:bundleDemoQa
-./gradlew -PhardeningPluginRepo=.local/hardening-1.4.1/repository \
+./gradlew -PhardeningPluginRepo=.local/hardening-1.4.2/repository \
   :mobile:bundleDemoQaHardening
-./gradlew -PhardeningPluginRepo=.local/hardening-1.4.1/repository \
+./gradlew -PhardeningPluginRepo=.local/hardening-1.4.2/repository \
   -PandroidHardening=true :mobile:captureHardeningBaselineDemoQa
-./gradlew -PhardeningPluginRepo=.local/hardening-1.4.1/repository \
+./gradlew -PhardeningPluginRepo=.local/hardening-1.4.2/repository \
   -PandroidHardening=true :mobile:compareHardeningDemoQa
 ```
 
@@ -167,18 +167,18 @@ plugins {
 
 ## 完整 `androidHardening` Kotlin DSL
 
-下面展示 v1 的完整公开接口。路径、插件声明和迁移描述文件必须替换为消费项目真实且已审阅的输入。v1 强制
-`legacyPlugins.verifyCompatibility=true`、真实 baseline 和至少一个已声明且实际应用的旧插件；没有绿色项目旁路。
+下面展示 v1 的推荐公开接口。路径、插件声明和迁移描述文件必须替换为消费项目真实且已审阅的输入。v1 在插件内部固定开启
+旧插件兼容校验，仍要求真实 baseline 和至少一个已声明且实际应用的旧插件；没有绿色项目旁路。总开关和固定种子分别使用
+`-PandroidHardening` 与 `-PandroidHardeningFixedSeed`，旧 `enabled` 和 `reproducibility.fixedSeed` 只作为 deprecated fallback。
 自动状态迁移可以关闭；启用时必须先捕获真实 descriptor，不能复制占位内容。
+
+已有规则文件可直接写为 `proguardRules("proguard-rules.pro", "library-rules.pro")`；需要原样保留或追加规则时，使用下面的配置块。
+`code { diversification { ... } }` 继续用于调整覆盖率、距离和增长阈值。旧设备配置中关闭自动回退并提供显式覆盖值的写法仍然兼容；关闭设备自动选择时必须提供序列号。
 
 ```kotlin
 androidHardening {
-    enabled.set(providers.gradleProperty("androidHardening").map(String::toBoolean).orElse(false))
     projectKey.set("demo")
-
-    variants {
-        include("demoQa")
-    }
+    targetVariants("demoQa")
 
     ownership {
         generatedPackagePrefixes.add("com.example.demo.generated")
@@ -210,7 +210,7 @@ androidHardening {
         }
     }
 
-    rules {
+    proguardRules {
         sourceFiles.from("proguard-rules.pro")
         preserveExactRules.from("hardening-preserve-exact.pro")
         additionalRules.from("hardening-additional.pro")
@@ -218,97 +218,61 @@ androidHardening {
 
     mapping {
         storeDirectory.set(rootProject.layout.projectDirectory.dir(".hardening/mappings"))
-        reusePrevious.set(true)
-        missingPolicy.set(RECREATE)
-        keepHistory.set(true)
-        quarantineInvalid.set(true)
         lockTimeoutSeconds.set(60)
     }
 
-    reproducibility {
-        fixedSeed.set(providers.gradleProperty("androidHardeningFixedSeed"))
+    // These aliases keep the configurable protection scope readable. Each block is optional.
+    dependencyProtection {
+        enabled.set(true)
+    }
+    nativeProtection {
+        enabled.set(true)
+        includes.add("base/lib/**/*.so")
+    }
+    assetProtection {
+        enabled.set(true)
+        includes.set(setOf("owned/images/*.png"))
+        images.set(true)
+    }
+    componentProtection {
+        enabled.set(true)
+        includes.add("com.example.demo.MainActivity")
     }
 
-    naming {
-        strategy.set(TYPED_PSEUDOWORDS)
-        renamePackages.set(true)
-        reuseAcrossBuilds.set(true)
-    }
-
+    // Coverage, distance, and growth thresholds remain configurable.
     code {
-        engine.set(R8)
-        preserveLineNumbers.set(true)
-        sourceFileMode.set(PSEUDONYMIZE)
-        stringFog.set(PRESERVE_CURRENT)
         diversification {
-            mode.set(DEX)
-            contentSalt.set(FRESH_PER_BUILD)
             minimumCoverage.set(0.50)
             minimumSimHashDistance.set(4)
             maximumGrowth.set(0.05)
             enforceMaximumGrowth.set(false)
         }
     }
-
     resources {
-        mode.set(RENAME_AND_AUDIT)
-        renameLayouts.set(true)
-        renameDrawables.set(true)
-        renameStyles.set(true)
-        preserveResourceIds.set(true)
-        reuseNamesAcrossBuilds.set(true)
-        styleHashPolicy.set(RESOURCE_TABLE_ONLY)
         bitmapDiversification {
-            safeOnly.set(true)
             minimumCoverage.set(0.90)
             minimumPHashDistance.set(11)
             minimumSsim.set(0.995)
         }
     }
 
-    bundle {
+    bundleMetadata {
         dependencyMetadata.set(OMIT)
         structuralMetadataEntryCount.set(16)
     }
 
-    contracts {
-        unresolvedAppReflection.set(FAIL_BUILD)
-        unresolvedResourceLookup.set(FAIL_BUILD)
-        externalNames.set(PRESERVE_AND_REPORT)
-    }
-
-    signing {
-        reuseVariantSigningConfig.set(true)
-    }
-
-    benchmark {
-        mode.set(REPORT_ONLY)
-    }
-
-    similarity {
-        mode.set(OWNED_AAB_APK)
+    similarityCheck {
         baselineDirectory.set(rootProject.layout.projectDirectory.dir(".hardening/baselines"))
         minimumImprovementPoints.set(0.01)
-        enforceRelativeImprovement.set(true)
-        maximumOverallExclusive.set(75.0)
-        enforceMaximumOverall.set(false)
-        maximumAabGrowth.set(0.10)
-        enforceMaximumAabGrowth.set(false)
     }
 
-    deviceAcceptance {
-        autoSelectSingleDevice.set(true)
+    deviceTest {
         serial.set(providers.gradleProperty("androidHardeningDeviceSerial"))
         applicationId.set(providers.gradleProperty("androidHardeningApplicationId"))
-        applicationIdFromVariant.set(true)
         launchActivity.set(providers.gradleProperty("androidHardeningLaunchActivity"))
-        launchActivityFromManifest.set(true)
-        stabilitySeconds.set(30)
     }
 
-    legacyPlugins {
-        mode.set(PRESERVE_UNMANAGED)
-        verifyCompatibility.set(true)
+    existingPlugins {
         baselineFile.set(rootProject.layout.projectDirectory.file("legacy/legacy-plugin-baseline.json"))
         plugin("neutralLegacy") {
             pluginId.set("com.example.legacy")
@@ -365,9 +329,9 @@ R8 名称策略不会用“能编译”代替契约安全。审计会保留并�
 
 ## 任务表（示例 Variant `demoQa`）
 
-每个 `variants.include("...")` 都按同一规则生成任务；`demoQa` 的 task suffix 是 `DemoQa`。
+每个 `targetVariants("...")` 都按同一规则生成任务；`demoQa` 的 task suffix 是 `DemoQa`。
 
-1.4.1 新增 `assemble<Variant>Hardening` 和 `bundle<Variant>Hardening`，可在 Android Studio 的 `other` 分组直接执行，
+从 1.4.1 起提供 `assemble<Variant>Hardening` 和 `bundle<Variant>Hardening`，可在 Android Studio 的 `other` 分组直接执行，
 无需手动传入加固开关。入口在项目根目录启动隔离构建，保留调用方的 `-P` 属性，并仅覆盖 `androidHardening=true`；
 APK 与 AAB 分别委托给当前模块的原有加固任务。AAB 入口不生成 APK。内部任务仍归属 `hardening`。
 升级时移除消费项目中同名的自定义入口，改为使用插件提供的任务。
@@ -412,10 +376,10 @@ APK/AAB 当作 Hardening 产物。插件也不会调用上传；上传必须在�
 - `.hardening/mappings/<projectKey>/<variant>/current/`、`history/`、`quarantine/`、`locks/`
 - `.hardening/baselines/<projectKey>/<variant>/v1/`
 
-第一次没有旧 mapping 时，`missingPolicy=RECREATE` 从 generation 0 建立新 lineage；没有历史 mapping 就没有连续性可继承，
-不应把首次构建描述为“已证明跨版本稳定”。以后 `reusePrevious=true` 把 App 自有的旧映射作为 `-applymapping` 输入，验证任务
-逐符号检查 mapping continuity，并使用当前 R8 官方 Retrace 恢复类、方法和行号。损坏或身份不匹配的 current state 在
-`quarantineInvalid=true` 时按内容哈希隔离；已验证状态按 AAB 身份写入不可变 `history`。
+第一次没有旧 mapping 时，插件内部固定的 `RECREATE` 策略从 generation 0 建立新 lineage；没有历史 mapping 就没有连续性可继承，
+不应把首次构建描述为“已证明跨版本稳定”。以后插件内部固定复用上一份有效映射作为 R8 `-applymapping` 输入，验证任务
+逐符号检查 mapping continuity，并使用当前 R8 官方 Retrace 恢复类、方法和行号。损坏或身份不匹配的 current state 按内容哈希隔离；
+已验证状态按 AAB 身份写入不可变 `history`。
 
 阅读 Schema v2 `transformation-report.json` 时，先检查 `resources.images[]` 的 `status`、`reason`、尺寸、
 `alphaPreserved`、`ssim`、`pHashDistance` 和 `nearestCorpusPHashDistance`，再核对 `imageFormatCoverage` 及总数量/字节
@@ -434,8 +398,8 @@ APK/AAB 当作 Hardening 产物。插件也不会调用上传；上传必须在�
 `-PandroidHardeningFixedSeed=<non-secret-lab-seed>` 会固定派生身份，并允许相同源码、工具链、依赖、签名材料、配置、路径语义和
 状态在干净目录中产生确定性包。Fixed seed 不是密钥，也不能抵消环境或输入差异；不要把测试 seed 作为生产秘密或安全控制。
 
-`signing.reuseVariantSigningConfig=true` 复用目标 Variant 的签名材料。插件验证 hardened AAB、universal APK 和普通比较 APK 的
-证书/签名关系；仓库和示例不提供 keystore 或凭据。`hardeningRunDemoQa` 在未指定 `deviceAcceptance.serial` 时只会自动选择唯一
+插件内部固定复用目标 Variant 的签名材料。插件验证 hardened AAB、universal APK 和普通比较 APK 的
+证书/签名关系；仓库和示例不提供 keystore 或凭据。`hardeningRunDemoQa` 在未指定 `deviceTest.serial` 时只会自动选择唯一
 在线设备；零台或多台设备时失败。它从 Variant/合并 Manifest 解析 application ID 和 launcher activity，安装后观察 30 秒。
 
 ## 离线使用
@@ -449,7 +413,7 @@ APK/AAB 当作 Hardening 产物。插件也不会调用上传；上传必须在�
 
 便携 ZIP 不包含 AGP/Kotlin，所以“已经解压 ZIP”不等于消费构建已完全离线。仓库维护者可使用
 `prepareOfflineTestKitEnvironment`、`packageOfflineHardeningTestKit` 和 `verifyOfflineHardeningTestKit` 验证完整、checksum 固定的
-离线矩阵。1.4.1 GitHub Release 不附带 Offline TestKit；消费方必须自行准备并校验 Gradle/AGP/Kotlin/AAPT2 与应用依赖，
+离线矩阵。1.4.2 GitHub Release 不附带 Offline TestKit；消费方必须自行准备并校验 Gradle/AGP/Kotlin/AAPT2 与应用依赖，
 不要让离线构建回退到未知宿主缓存或网络。
 
 ## 排障
@@ -464,5 +428,5 @@ APK/AAB 当作 Hardening 产物。插件也不会调用上传；上传必须在�
 - **mapping continuity/Retrace 失败**：保留失败报告和 `.hardening/mappings`，检查 R8 版本、旧 mapping、配置身份和隔离目录；不要手工覆盖 current/history。
 - **baseline 缺失或身份不符**：在已审阅普通/Hardening 输入上重新明确捕获 baseline；不能复制别的项目/Variant baseline。
 - **签名失败**：给目标 Variant 配置真实签名；不要把凭据或 keystore 提交到仓库。
-- **设备选择失败**：只连接一台授权设备，或配置 `deviceAcceptance.serial`；设备操作只从 `hardeningRun<Variant>` 进入。
+- **设备选择失败**：只连接一台授权设备，或配置 `deviceTest.serial`；设备操作只从 `hardeningRun<Variant>` 进入。
 - **相似度未改善**：阅读 JSON/Markdown 的自有条目贡献和增长数据。不要把调阈值当作反逆向或检测器规避证明。

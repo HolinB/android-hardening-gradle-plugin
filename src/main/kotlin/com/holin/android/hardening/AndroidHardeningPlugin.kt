@@ -72,6 +72,7 @@ internal class HardeningPluginRegistration {
             project.objects,
             project.layout,
         )
+        extension.bindProjectProperties(project)
         project.gradle.taskGraph.whenReady(object : Action<TaskExecutionGraph> {
             override fun execute(graph: TaskExecutionGraph) {
                 val graphTasks = graph.allTasks
@@ -159,7 +160,7 @@ internal class HardeningPluginRegistration {
             InvocationSaltService::class.java,
         ) {
             parameters.fixedSeedSha256.set(
-                extension.reproducibility.fixedSeed.map(FixedSeedDerivation::seedSha256),
+                extension.effectiveFixedSeed.map(FixedSeedDerivation::seedSha256),
             )
         }
         val lockService = project.gradle.sharedServices.registerIfAbsent(
@@ -186,12 +187,12 @@ internal class HardeningPluginRegistration {
             configurationSchema.set(configurationSchema(variant))
             completeConfigurationSha256?.let { configurationSha256 ->
                 reproducibilityConfigurationSha256.set(
-                    extension.reproducibility.fixedSeed.flatMap { configurationSha256 },
+                    extension.effectiveFixedSeed.flatMap { configurationSha256 },
                 )
             }
-            reusePrevious.set(extension.mapping.reusePrevious)
-            keepHistory.set(extension.mapping.keepHistory)
-            quarantineInvalid.set(extension.mapping.quarantineInvalid)
+            reusePrevious.set(HardeningV1Policy.mappingReusePrevious)
+            keepHistory.set(HardeningV1Policy.mappingKeepHistory)
+            quarantineInvalid.set(HardeningV1Policy.mappingQuarantineInvalid)
             autoMigrateLegacyState.set(extension.compatibility.autoMigrateLegacyState)
             migrationDescriptor.set(extension.compatibility.migrationDescriptor)
             mappingStoreDirectory.set(extension.mapping.storeDirectory)
@@ -216,9 +217,9 @@ internal class HardeningPluginRegistration {
             fullAuditEnabled.set(false)
             variantName.set(variant)
             namespace.set(variantIdentity.namespace)
-            unresolvedAppReflectionPolicy.set(extension.contracts.unresolvedAppReflection.map { it.name })
-            unresolvedResourceLookupPolicy.set(extension.contracts.unresolvedResourceLookup.map { it.name })
-            externalNamesPolicy.set(extension.contracts.externalNames.map { it.name })
+            unresolvedAppReflectionPolicy.set(HardeningV1Policy.unresolvedAppReflection.name)
+            unresolvedResourceLookupPolicy.set(HardeningV1Policy.unresolvedResourceLookup.name)
+            externalNamesPolicy.set(HardeningV1Policy.externalNames.name)
             repositoryRoot.set(project.rootProject.layout.projectDirectory)
             appDirectory.set(project.layout.projectDirectory)
             ownership.set(resolvedOwnership)
@@ -401,14 +402,14 @@ internal class HardeningPluginRegistration {
                     )
                 })
                 serial.set(extension.deviceAcceptance.serial)
-                autoSelectSingleDevice.set(extension.deviceAcceptance.autoSelectSingleDevice)
+                autoSelectSingleDevice.set(HardeningV1Policy.autoSelectSingleDevice)
                 applicationId.set(extension.deviceAcceptance.applicationId)
-                applicationIdFromVariant.set(extension.deviceAcceptance.applicationIdFromVariant)
+                applicationIdFromVariant.set(HardeningV1Policy.applicationIdFromVariant)
                 variantApplicationId.set(variantIdentity.applicationId)
                 launchActivity.set(extension.deviceAcceptance.launchActivity)
-                launchActivityFromManifest.set(extension.deviceAcceptance.launchActivityFromManifest)
+                launchActivityFromManifest.set(HardeningV1Policy.launchActivityFromManifest)
                 context.mergedManifest?.let(mergedManifest::set)
-                stabilitySeconds.set(extension.deviceAcceptance.stabilitySeconds)
+                stabilitySeconds.set(HardeningV1Policy.deviceStabilitySeconds)
                 runTaskName.set("hardeningRun$suffix")
                 comparisonReport.set(
                     project.layout.buildDirectory.file("reports/hardening/$variant/similarity-report.json"),
@@ -506,7 +507,7 @@ internal class HardeningPluginRegistration {
 
     private fun Task.configureInternalGuard(extension: AndroidHardeningExtension, correctedCommand: String) {
         onlyIf("androidHardening is enabled or this task was directly requested") {
-            if (extension.enabled.get()) {
+            if (extension.effectiveEnabled.get()) {
                 true
             } else if (project.gradle.startParameter.taskNames.any { requested -> requested.substringAfterLast(':') == name }) {
                 throw GradleException("Android hardening is disabled. Run exactly:\n$correctedCommand")
@@ -523,7 +524,7 @@ internal class HardeningPluginRegistration {
     ) {
         group = HARDENING_GROUP
         dependsOn(dependency)
-        hardeningEnabled.set(extension.enabled)
+        hardeningEnabled.set(extension.effectiveEnabled)
         correctedCommand.set(command)
     }
 
@@ -539,7 +540,7 @@ internal class HardeningPluginRegistration {
         require(Files.isRegularFile(baseline, NOFOLLOW_LINKS) && !Files.isSymbolicLink(baseline)) {
             "legacyPlugins.baselineFile is missing or is not a non-symlink regular file: $baseline"
         }
-        if (legacyPlugins.verifyCompatibility.get()) {
+        if (HardeningV1Policy.verifyLegacyPluginCompatibility) {
             require(!legacyPlugins.plugins.isEmpty()) {
                 "legacyPlugins must declare at least one plugin when compatibility verification is enabled"
             }
@@ -917,7 +918,7 @@ internal class AgpHardeningAdapter {
 
     private fun Task.configureInternalGuard(extension: AndroidHardeningExtension, correctedCommand: String) {
         onlyIf("androidHardening is enabled or this task was directly requested") {
-            if (extension.enabled.get()) {
+            if (extension.effectiveEnabled.get()) {
                 true
             } else if (project.gradle.startParameter.taskNames.any { requested -> requested.substringAfterLast(':') == name }) {
                 throw GradleException("Android hardening is disabled. Run exactly:\n$correctedCommand")
