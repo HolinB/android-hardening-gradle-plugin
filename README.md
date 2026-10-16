@@ -2,6 +2,8 @@
 
 [English](README.en.md) | [1.3.0 更新日志](CHANGELOG.md)
 
+[1.5.1 本地验证版详细介绍](docs/PLUGIN_GUIDE_1_5_1_ZH.md)：涵盖名称混淆、资源与运行时保护、接入配置、构建任务、报告和已知限制。该文档描述本地 1.5.1 实现，未随文档提交升级本分支源码或发布新版本。
+
 `com.holin.android.hardening` 是一个面向 Android Application Variant 的本地二进制 Gradle 插件。它在显式授权的
 Variant 和显式声明的代码/资源所有权范围内，复用 R8 映射、稳定化自有名称、审计外部契约、改写并重新签名 AAB，
 生成通用 APK，并输出可审计的映射、语义、相似度和设备验收证据。默认 `enabled=false`，普通构建图不依赖任何
