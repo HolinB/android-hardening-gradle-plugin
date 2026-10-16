@@ -1,6 +1,6 @@
 # Android Hardening Gradle Plugin 1.5.1（本地验证版）
 
-[English](README.en.md) | [1.4.2 更新日志](CHANGELOG.md) | [受控转换与适用性](docs/controlled-transformations.md)
+[English](README.en.md) | [更新日志](CHANGELOG.md) | [1.5.1 详细介绍](docs/PLUGIN_GUIDE_1_5_1_ZH.md) | [受控转换与适用性](docs/controlled-transformations.md)
 
 1.5.1 修复 macOS 无效 `DEVELOPER_DIR` 继承导致的 Git 子进程失败；1.5.0 增加资源文案／asset 读取闭合分析和默认关闭的 `runtimeProtection.images`。本次交付使用独立的本地 Maven 包，
 不覆盖 1.4.2。构建后校验 `build/distributions/hardening-gradle-plugin-1.5.1-portable-maven.zip.sha256`，

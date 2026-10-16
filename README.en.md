@@ -1,6 +1,6 @@
 # Android Hardening Gradle Plugin 1.5.1 (local validation build)
 
-[Chinese](README.md) | [1.4.2 changelog](CHANGELOG.md) | [Controlled transformations](docs/controlled-transformations.md)
+[Chinese](README.md) | [Changelog](CHANGELOG.md) | [1.5.1 detailed guide (Chinese)](docs/PLUGIN_GUIDE_1_5_1_ZH.md) | [Controlled transformations](docs/controlled-transformations.md)
 
 Version 1.5.1 fixes Git subprocesses inheriting an invalid macOS `DEVELOPER_DIR`; version 1.5.0 adds resource string/asset
 reader analysis and opt-in `runtimeProtection.images`. It is delivered as a separate local Maven package without
