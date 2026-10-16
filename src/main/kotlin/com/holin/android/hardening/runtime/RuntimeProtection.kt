@@ -15,6 +15,7 @@ data class RuntimeProtectionPolicy(
     val assetPaths: Set<String> = emptySet(),
     val assetReaders: Set<String> = emptySet(),
     val minimumAssetCoverage: Double = 0.0,
+    val images: RuntimeImagePolicy = RuntimeImagePolicy(),
 ) {
     init {
         require(minimumStringCoverage.isFinite() && minimumStringCoverage in 0.0..1.0)
@@ -24,10 +25,11 @@ data class RuntimeProtectionPolicy(
         assetReaders.forEach { require('#' in it && '(' in it && ')' in it) { "assetReaders use internal/Class#method(descriptor)" } }
         require(assetPaths.isEmpty() || assetReaders.isNotEmpty()) { "asset containers require explicit owned reader methods" }
     }
-    val enabled: Boolean get() = strings.isNotEmpty() || assetPaths.isNotEmpty()
+    val enabled: Boolean get() = strings.isNotEmpty() || assetPaths.isNotEmpty() || images.enabled
     fun encode(): String = JsonOutput.toJson(mapOf("schemaVersion" to 1, "strings" to strings.sorted(),
         "minimumStringCoverage" to minimumStringCoverage, "assetPaths" to assetPaths.sorted(),
-        "assetReaders" to assetReaders.sorted(), "minimumAssetCoverage" to minimumAssetCoverage))
+        "assetReaders" to assetReaders.sorted(), "minimumAssetCoverage" to minimumAssetCoverage) +
+        if (images.enabled) mapOf("images" to images.values()) else emptyMap())
     companion object {
         fun decode(text: String): RuntimeProtectionPolicy {
             StrictJson.validateDocument(text)
@@ -35,7 +37,8 @@ data class RuntimeProtectionPolicy(
             require(p["schemaVersion"] == 1)
             fun names(key: String) = (p[key] as List<*>).map { it as String }.toSet()
             return RuntimeProtectionPolicy(names("strings"), (p["minimumStringCoverage"] as Number).toDouble(),
-                names("assetPaths"), names("assetReaders"), (p["minimumAssetCoverage"] as Number).toDouble())
+                names("assetPaths"), names("assetReaders"), (p["minimumAssetCoverage"] as Number).toDouble(),
+                (p["images"] as? Map<*, *>)?.let(RuntimeImagePolicy::read) ?: RuntimeImagePolicy())
         }
     }
 }
@@ -105,7 +108,9 @@ object RuntimeStringResources {
                 seen += entry.name
                 val id = (pkg.packageId.id shl 24) or (type.typeId.id shl 16) or entry.entryId.id
                 val eligible = id !in referenced && entry.configValueCount > 0 && entry.configValueList.all {
-                    it.value.hasItem() && it.value.item.hasStr()
+                    it.value.hasItem() && it.value.item.hasStr() &&
+                        !it.value.item.str.value.startsWith("res/") && !it.value.item.str.value.startsWith("assets/") &&
+                        !Regex("(?i).*\\.(png|webp|jpe?g|xml)").matches(it.value.item.str.value)
                 }
                 if (eligible) {
                     entry.configValueList.forEachIndexed { ci, value ->

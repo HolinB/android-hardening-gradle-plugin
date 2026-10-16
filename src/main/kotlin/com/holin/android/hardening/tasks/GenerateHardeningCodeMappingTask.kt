@@ -279,7 +279,7 @@ abstract class GenerateHardeningCodeMappingTask : DefaultTask() {
                 bytecode,
                 sourceAudit,
                 potentialBeanFields,
-                Files.readString(rulesPath),
+                Files.readString(rulesPath) + "\n" + BINDER_INTERFACE_RULE,
             )
             val retiredLegacyFieldAssignmentCount = retiredLegacyFieldAssignmentCount(
                 registrySnapshot,
@@ -361,6 +361,11 @@ abstract class GenerateHardeningCodeMappingTask : DefaultTask() {
         val plan = generated.plan
         append("# hardening mapping sha256: ").append(mappingSha256).append('\n')
         append("-applymapping ").append(quoteProguardPath(mappingPath)).append('\n').append('\n')
+        // Inlined SDK calls are also subject to owned adaptclassstrings rules.
+        // Binder interface names are wire identities: keep their types from being
+        // merged/renamed while leaving implementation methods optimizable. This
+        // compiler compatibility rule must not reset the user's mapping lineage.
+        append(BINDER_INTERFACE_RULE).append('\n')
         val potentialBeanFieldRules = PotentialBeanFieldRulesRenderer().render(
             generated.potentialBeanFields,
             plan.ownedOriginalOwners,
@@ -386,6 +391,8 @@ abstract class GenerateHardeningCodeMappingTask : DefaultTask() {
         if (generated.viewModelFactoryRules.isNotEmpty()) append('\n')
         append(OwnedCodeOptimizationRules(repositoryRoot.get().asFile.toPath(), ownership.get()).render())
     }
+
+    private val BINDER_INTERFACE_RULE = "-keep interface * extends android.os.IInterface\n"
 
     private data class GeneratedCodePlan(
         val plan: CodeNamePlan,

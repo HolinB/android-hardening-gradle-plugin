@@ -6,7 +6,14 @@ public final class Bridge {
     private static final String PREFIX = "@PREFIX@";
     private static final java.util.Set<String> ASSETS = new java.util.HashSet<String>(
         java.util.Arrays.asList(new String[] {@ASSETS@}));
+    private static final String[] ASSET_NAMES = {@ASSET_NAMES@};
+    private static volatile android.content.Context cacheContext;
     private Bridge() {}
+
+    public static void install(android.content.Context context) {
+        cacheContext = context;
+    }
+
 
     private static byte[] decrypt(byte[] input) throws java.security.GeneralSecurityException {
         if (input.length < 32 || !java.util.Arrays.equals(MARKER, java.util.Arrays.copyOfRange(input, 0, 4))) {
@@ -46,31 +53,127 @@ public final class Bridge {
         return String.format(resources.getConfiguration().getLocales().get(0), decode(text), args);
     }
 
+    private static void decodeValue(android.util.TypedValue value) {
+        if (value.type == android.util.TypedValue.TYPE_STRING && value.string instanceof String) {
+            value.string = decode((String) value.string);
+        }
+    }
+    public static void value(android.content.res.Resources resources, int id, android.util.TypedValue output, boolean resolveRefs) {
+        resources.getValue(id, output, resolveRefs);
+        decodeValue(output);
+    }
+    public static void value(android.content.res.Resources resources, String name, android.util.TypedValue output, boolean resolveRefs) {
+        resources.getValue(name, output, resolveRefs);
+        decodeValue(output);
+    }
+    public static void valueForDensity(android.content.res.Resources resources, int id, int density, android.util.TypedValue output, boolean resolveRefs) {
+        resources.getValueForDensity(id, density, output, resolveRefs);
+        decodeValue(output);
+    }
+
+    public static CharSequence text(android.content.Context context, int id) {
+        CharSequence value = context.getText(id);
+        return value instanceof String ? decode((String) value) : value;
+    }
+    public static CharSequence text(android.content.res.Resources resources, int id) {
+        CharSequence value = resources.getText(id);
+        return value instanceof String ? decode((String) value) : value;
+    }
+    public static CharSequence text(android.content.res.Resources resources, int id, CharSequence fallback) {
+        CharSequence value = resources.getText(id, fallback);
+        return value instanceof String ? decode((String) value) : value;
+    }
+
+    private static String protectedPath(String path) throws java.security.GeneralSecurityException {
+        if (path == null || ASSETS.isEmpty()) return null;
+        java.security.MessageDigest digest = java.security.MessageDigest.getInstance("SHA-256");
+        digest.update(KEY);
+        byte[] hash = digest.digest(path.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        StringBuilder id = new StringBuilder(64);
+        for (byte value : hash) {
+            id.append(Character.forDigit((value >>> 4) & 15, 16));
+            id.append(Character.forDigit(value & 15, 16));
+        }
+        if (!ASSETS.contains(id.toString())) return null;
+        int slash = path.lastIndexOf('/');
+        return (slash < 0 ? "" : path.substring(0, slash + 1)) + "_h_" + id + ".bin";
+    }
+
+    private static byte[] read(java.io.InputStream input) throws java.io.IOException {
+        try (java.io.InputStream stream = input) {
+            java.io.ByteArrayOutputStream output = new java.io.ByteArrayOutputStream();
+            byte[] buffer = new byte[8192];
+            int count;
+            while ((count = stream.read(buffer)) != -1) output.write(buffer, 0, count);
+            return output.toByteArray();
+        }
+    }
+
     public static java.io.InputStream open(android.content.res.AssetManager assets, String path) throws java.io.IOException {
-        if (path == null || ASSETS.isEmpty()) return assets.open(path);
+        return open(assets, path, android.content.res.AssetManager.ACCESS_STREAMING);
+    }
+    public static java.io.InputStream open(android.content.res.AssetManager assets, String path, int mode) throws java.io.IOException {
         try {
-            java.security.MessageDigest digest = java.security.MessageDigest.getInstance("SHA-256");
-            digest.update(KEY);
-            byte[] hash = digest.digest(path.getBytes(java.nio.charset.StandardCharsets.UTF_8));
-            StringBuilder id = new StringBuilder(64);
-            for (byte value : hash) {
-                id.append(Character.forDigit((value >>> 4) & 15, 16));
-                id.append(Character.forDigit(value & 15, 16));
-            }
-            if (!ASSETS.contains(id.toString())) return assets.open(path);
-            byte[] envelope;
-            int slash = path.lastIndexOf('/');
-            String protectedPath = (slash < 0 ? "" : path.substring(0, slash + 1)) + "_h_" + id + ".bin";
-            try (java.io.InputStream input = assets.open(protectedPath)) {
-                java.io.ByteArrayOutputStream output = new java.io.ByteArrayOutputStream();
-                byte[] buffer = new byte[8192];
-                int count;
-                while ((count = input.read(buffer)) != -1) output.write(buffer, 0, count);
-                envelope = output.toByteArray();
-            }
-            return new java.io.ByteArrayInputStream(decrypt(envelope));
+            String encrypted = protectedPath(path);
+            if (encrypted == null) return assets.open(path, mode);
+            return new java.io.ByteArrayInputStream(decrypt(read(assets.open(encrypted, mode))));
         } catch (java.security.GeneralSecurityException failure) {
             throw new java.io.IOException("Invalid protected asset", failure);
         }
     }
+
+    public static String[] list(android.content.res.AssetManager assets, String directory) throws java.io.IOException {
+        String[] values = assets.list(directory);
+        if (values == null || ASSETS.isEmpty() || directory == null) return values;
+        String prefix = directory.isEmpty() ? "" : directory + "/";
+        java.util.Map<String, String> originals = new java.util.HashMap<String, String>();
+        try {
+            for (String encoded : ASSET_NAMES) {
+                String path = decode(encoded);
+                if (path.startsWith(prefix) && path.indexOf('/', prefix.length()) < 0) {
+                    String encrypted = protectedPath(path);
+                    originals.put(encrypted.substring(encrypted.lastIndexOf('/') + 1), path.substring(prefix.length()));
+                }
+            }
+        } catch (java.security.GeneralSecurityException failure) {
+            throw new java.io.IOException("Invalid asset directory", failure);
+        }
+        for (int i = 0; i < values.length; i++) {
+            String original = originals.get(values[i]);
+            if (original != null) values[i] = original;
+        }
+        java.util.Arrays.sort(values);
+        return values;
+    }
+
+    public static android.content.res.AssetFileDescriptor openFd(android.content.res.AssetManager assets, String path) throws java.io.IOException {
+        try {
+            if (protectedPath(path) == null) return assets.openFd(path);
+        } catch (java.security.GeneralSecurityException failure) {
+            throw new java.io.IOException("Invalid protected asset", failure);
+        }
+        android.content.Context context = cacheContext;
+        if (context == null) throw new java.io.IOException("Runtime assets have not been initialized");
+        java.io.File directory = context.getCacheDir();
+        // A seekable descriptor preserves media/SDK readers. Unlink immediately after
+        // opening so decrypted content never becomes a persistent cache entry.
+        byte[] contents = read(open(assets, path));
+        java.io.File file = java.io.File.createTempFile("hrd-", ".tmp", directory);
+        android.os.ParcelFileDescriptor descriptor = null;
+        try {
+            try (java.io.FileOutputStream output = new java.io.FileOutputStream(file)) { output.write(contents); }
+            descriptor = android.os.ParcelFileDescriptor.open(file, android.os.ParcelFileDescriptor.MODE_READ_ONLY);
+            if (!file.delete()) throw new java.io.IOException("Unable to unlink protected asset descriptor");
+            return new android.content.res.AssetFileDescriptor(descriptor, 0, contents.length);
+        } catch (java.io.IOException failure) {
+            if (descriptor != null) descriptor.close();
+            throw failure;
+        } finally {
+            java.util.Arrays.fill(contents, (byte) 0);
+            file.delete();
+        }
+    }
+
+@IMAGES@
+
 }

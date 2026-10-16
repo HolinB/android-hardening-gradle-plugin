@@ -1,3 +1,13 @@
+# Android Hardening Gradle Plugin 1.5.0 (local)
+
+- Repair inline resource ID, inherited reader, packaged dependency, and owned forwarding-reader analysis for runtime strings and assets. Unproven references remain excluded.
+- Reuse the authenticated envelope and runtime bridge for opt-in owned PNG/WebP drawable XML inflation. Retain IDs/configurations/density and report unsupported readers, NinePatch, animation, Manifest/theme/system resources separately.
+- Encrypt original asset/image bytes without a preceding encoding pass. Include the content salt directly in the encryption identity; preserve deterministic output for fixed inputs and salt.
+- Add `runtimeProtection.images` with independent count/byte coverage. Disabled image policy retains the prior serialized configuration identity.
+- Preserve Android Binder interface types when generating compiler mapping rules. This prevents class-string adaptation from rewriting SDK protocol descriptors after R8 inlines SDK calls into owned code, including Google Maps UI settings. The compiler compatibility rule does not change the user-rule configuration fingerprint.
+- Keep layout/style restructuring, additional Manifest strategies, and Native metadata stripping outside this change.
+- This is a separate local validation package. The published 1.4.2 launcher remains pinned to its existing release artifact.
+
 # Android Hardening Gradle Plugin 1.4.2
 
 Local delivery: 2026-10-12.

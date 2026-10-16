@@ -258,6 +258,8 @@ internal object AgpHardeningConfigurer {
             group = "hardening"
             namespace.set(variant.namespace)
             policy.set(project.providers.provider { extension.runtimeProtection.policy().encode() })
+            minimumSdk.set(variant.minSdk.apiLevel)
+            inputManifest.set(variant.artifacts.get(SingleArtifact.MERGED_MANIFEST))
             ownership.set(resolved)
             repositoryRoot.set(project.rootProject.layout.projectDirectory)
             sourceOwnership.set(resolved.map { it.modules.map { module -> "${module.path}:${module.sourceSets.sorted()}" } })
@@ -275,7 +277,7 @@ internal object AgpHardeningConfigurer {
             report.set(project.layout.buildDirectory.file("reports/hardening/${variant.name}/runtime-readers.json"))
             generatedDirectory.set(project.layout.buildDirectory.dir("intermediates/hardening/${variant.name}/runtime/generated"))
         }
-        variant.artifacts.forScope(ScopedArtifacts.Scope.PROJECT).use(runtime).toTransform(ScopedArtifact.CLASSES,
+        variant.artifacts.forScope(ScopedArtifacts.Scope.ALL).use(runtime).toTransform(ScopedArtifact.CLASSES,
             ProtectHardeningRuntimeTask::inputJars, ProtectHardeningRuntimeTask::inputDirectories, ProtectHardeningRuntimeTask::outputJar)
         variant.proguardFiles.add(runtime.flatMap(ProtectHardeningRuntimeTask::keepRules))
         requireNotNull(tasks.pipeline).rewrite.configure { runtimeClosure.set(runtime.flatMap(ProtectHardeningRuntimeTask::closure)) }

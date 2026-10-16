@@ -558,8 +558,18 @@ open class RuntimeProtectionSpec @Inject constructor(objects: ObjectFactory) {
     val assetPaths: SetProperty<String> = objects.setProperty(String::class.java).convention(emptySet())
     val assetReaders: SetProperty<String> = objects.setProperty(String::class.java).convention(emptySet())
     val minimumAssetCoverage: Property<Double> = objects.property(Double::class.java).convention(0.0)
+    val images: RuntimeImagesSpec = objects.newInstance(RuntimeImagesSpec::class.java)
+    fun images(action: Action<in RuntimeImagesSpec>) = action.execute(images)
     fun policy() = com.holin.android.hardening.runtime.RuntimeProtectionPolicy(strings.get(), minimumStringCoverage.get(),
-        assetPaths.get(), assetReaders.get(), minimumAssetCoverage.get())
+        assetPaths.get(), assetReaders.get(), minimumAssetCoverage.get(), images.policy())
+}
+
+open class RuntimeImagesSpec @Inject constructor(objects: ObjectFactory) {
+    val enabled: Property<Boolean> = objects.property(Boolean::class.java).convention(false)
+    val includes: SetProperty<String> = objects.setProperty(String::class.java).convention(setOf("drawable/*"))
+    val excludes: SetProperty<String> = objects.setProperty(String::class.java).convention(emptySet())
+    val minimumCoverage: Property<Double> = objects.property(Double::class.java).convention(0.0)
+    fun policy() = com.holin.android.hardening.runtime.RuntimeImagePolicy(enabled.get(), includes.get(), excludes.get(), minimumCoverage.get())
 }
 
 open class NativeLibrariesSpec @Inject constructor(objects: ObjectFactory) {

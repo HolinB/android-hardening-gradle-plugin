@@ -132,12 +132,19 @@ class BundlePostRewriteSemanticVerifier {
                     BundleSemanticVerifier.ASSET_RUNTIME_EQUIVALENCE -> com.holin.android.hardening.runtime.RuntimeAssetContainers.verify(
                         oldPath, newPath, before, after, requireNotNull(runtimeScope), contentSalt)
                     BundleSemanticVerifier.ASSET_FORMAT_EQUIVALENCE -> com.holin.android.hardening.resources.ControlledAssets.verify(oldPath, newPath, before, after, contentSalt)
+                    BundleSemanticVerifier.IMAGE_RUNTIME_EQUIVALENCE -> {
+                        val scope = requireNotNull(runtimeScope)
+                        val record = scope.images.getValue(oldPath)
+                        require(record.newPath == newPath)
+                        com.holin.android.hardening.runtime.RuntimeImageResources.verify(before, after, record, scope.key)
+                    }
                     BundleSemanticVerifier.RESOURCE_SEMANTICS -> verifyResource(
                         oldPath,
                         newPath,
                         before,
                         if (oldPath == RESOURCES_PB_PATH && runtimeScope != null)
-                            com.holin.android.hardening.runtime.RuntimeStringResources.normalize(after, runtimeScope.stringIds, runtimeScope.key)
+                            com.holin.android.hardening.runtime.RuntimeImageResources.normalizeTable(
+                                com.holin.android.hardening.runtime.RuntimeStringResources.normalize(after, runtimeScope.stringIds, runtimeScope.key), runtimeScope.images.values)
                         else after,
                         manifest,
                         plan.resources,

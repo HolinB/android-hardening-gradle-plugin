@@ -50,7 +50,7 @@ data class AssetPolicy(
 data class ControlledAssetPlan(val replacements: List<BundleEntryReplacement>, val report: Map<String, Any>)
 
 object ControlledAssets {
-    fun plan(root: Path, ownership: HardeningOwnership, entries: Map<String, ByteArray>, policy: AssetPolicy, salt: ByteArray): ControlledAssetPlan {
+    fun plan(root: Path, ownership: HardeningOwnership, entries: Map<String, ByteArray>, policy: AssetPolicy, salt: ByteArray, runtimePaths: Set<String> = emptySet()): ControlledAssetPlan {
         val sourceCandidates = mutableMapOf<String, MutableList<Pair<String, Path>>>()
         if (policy.enabled) ownership.modules.forEach { module -> module.sourceRoots.assetDirectories.forEach { directory ->
             require(directory.startsWith(root) && !Files.isSymbolicLink(directory)) { "asset root must remain within the repository" }
@@ -67,16 +67,19 @@ object ControlledAssets {
         val ignored = GitIgnoreMatcher(root).ignored(sourceCandidates.values.flatten().map { it.second })
         val replacements = mutableListOf<BundleEntryReplacement>()
         var scoped = 0
+        var deferred = 0
         val records = entries.filterKeys { "/assets/" in it }.toSortedMap().map { (path, bytes) ->
             val relative = path.substringAfter("/assets/")
             val sources = sourceCandidates[path].orEmpty().filter { it.second !in ignored && Files.readAllBytes(it.second).contentEquals(bytes) }
             val ext = relative.substringAfterLast('.').lowercase()
             val requested = policy.enabled && policy.accepts(relative)
             if (requested) scoped++
+            if (requested && relative in runtimePaths && sources.isNotEmpty()) deferred++
             var reason = when {
                 !policy.enabled -> "DISABLED"
                 !requested -> "OUTSIDE_CONFIGURED_SCOPE"
                 sources.isEmpty() -> "DEPENDENCY_GENERATED_OR_UNPROVEN_SOURCE"
+                relative in runtimePaths -> "ENCRYPTION_PATH_SKIPS_FORMAT_CONVERSION"
                 ext in setOf("pem", "cer", "crt", "der", "p12", "bks", "jks") -> "CERTIFICATE_CONTRACT"
                 ext in setOf("png", "webp", "jpg", "jpeg") && policy.images -> "PIXEL_EXACT"
                 ext in setOf("ttf", "otf") && policy.fonts -> "SFNT_TABLE_EQUIVALENCE"
@@ -110,11 +113,12 @@ object ControlledAssets {
                 "detail" to detail, "outputSha256" to Sha256.hex(after ?: bytes),
                 "pathStatus" to "PRESERVED_READER_CONTRACT")
         }
-        val coverage = if (scoped == 0) 0.0 else replacements.size.toDouble() / scoped
-        require(!policy.enabled || coverage + 1e-12 >= policy.minimumCoverage) { "asset proven coverage $coverage is below ${policy.minimumCoverage}" }
+        val formatScoped = scoped - deferred
+        val coverage = if (formatScoped == 0) 0.0 else replacements.size.toDouble() / formatScoped
+        require(!policy.enabled || (scoped > 0 && formatScoped == 0) || coverage + 1e-12 >= policy.minimumCoverage) { "asset proven coverage $coverage is below ${policy.minimumCoverage}" }
         return ControlledAssetPlan(replacements, mapOf("schemaVersion" to 1, "enabled" to policy.enabled,
             "discovered" to records.size, "scoped" to scoped, "transformed" to replacements.size,
-            "coverage" to coverage, "entries" to records))
+            "coverage" to coverage, "formatScoped" to formatScoped, "deferredToEncryption" to deferred, "entries" to records))
     }
 
     fun verify(oldPath: String, newPath: String, before: ByteArray, after: ByteArray, salt: ByteArray) {

@@ -1,6 +1,13 @@
-# Android Hardening Gradle Plugin 1.4.2
+# Android Hardening Gradle Plugin 1.5.0 (local validation build)
 
 [Chinese](README.md) | [1.4.2 changelog](CHANGELOG.md) | [Controlled transformations](docs/controlled-transformations.md)
+
+Version 1.5.0 adds resource string/asset reader analysis and opt-in `runtimeProtection.images`. It is delivered as a separate local Maven package without
+replacing 1.4.2. Verify
+`build/distributions/hardening-gradle-plugin-1.5.0-portable-maven.zip.sha256`, extract it, verify `SHA256SUMS`, then use
+plugin version `1.5.0` with `-PhardeningPluginRepo=<extracted directory>/repository` and the consumer's `./gradlew`.
+The published 1.4.2 download instructions and launcher checksum below still refer to the published release.
+See [runtime resource protection](docs/runtime-content-protection.md) for eligibility and reporting.
 
 `com.holin.android.hardening` is a local binary Gradle plugin for Android application variants. Within explicitly
 selected variants and explicitly declared code/resource ownership, it reuses R8 mappings, assigns stable owned names,

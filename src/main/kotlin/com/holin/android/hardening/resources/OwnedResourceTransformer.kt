@@ -356,7 +356,9 @@ class OwnedResourceTransformer(
         ImageIneligibilityReason.UNOWNED_MODULE -> ResourceExclusionReason.UNOWNED_MODULE
         ImageIneligibilityReason.OUTSIDE_CONFIGURED_WEBP_SCOPE ->
             ResourceExclusionReason.OUTSIDE_CONFIGURED_WEBP_SCOPE
-        ImageIneligibilityReason.OUTSIDE_CONFIGURED_IMAGE_SCOPE ->
+        ImageIneligibilityReason.OUTSIDE_CONFIGURED_IMAGE_SCOPE,
+        ImageIneligibilityReason.RUNTIME_ENCRYPTION_SELECTED,
+        ->
             ResourceExclusionReason.OUTSIDE_CONFIGURED_IMAGE_SCOPE
         ImageIneligibilityReason.NINE_PATCH -> ResourceExclusionReason.NINE_PATCH
         ImageIneligibilityReason.ANIMATION -> ResourceExclusionReason.ANIMATION

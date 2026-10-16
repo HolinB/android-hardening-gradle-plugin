@@ -138,7 +138,7 @@ class PortablePublicationContractTest {
         val REQUIRED_BUILD_LOGIC_SNIPPETS = listOf(
             "`maven-publish`",
             "group = \"com.holin.android.hardening\"",
-            "version = \"1.4.2\"",
+            "version = \"1.5.0\"",
             "artifactId = \"hardening-gradle-plugin\"",
             "id = \"com.holin.android.hardening\"",
             "implementationClass = \"com.holin.android.hardening.AndroidHardeningPlugin\"",

@@ -1,0 +1,126 @@
+    /** One mutable drawable per inflation, sharing only immutable decoded bitmap pixels. */
+    public static final class Image extends android.graphics.drawable.Drawable implements android.graphics.drawable.Drawable.Callback {
+        private static final android.util.LruCache<String, android.graphics.Bitmap> CACHE =
+            new android.util.LruCache<String, android.graphics.Bitmap>((int) Math.min(8L * 1024 * 1024, Math.max(1024 * 1024, Runtime.getRuntime().maxMemory() / 32))) {
+                @Override protected int sizeOf(String key, android.graphics.Bitmap bitmap) { return bitmap.getAllocationByteCount(); }
+            };
+        private android.graphics.drawable.Drawable child;
+        public Image() {}
+        private Image(android.graphics.drawable.Drawable drawable) { setChild(drawable.mutate()); }
+        private void setChild(android.graphics.drawable.Drawable drawable) {
+            child = drawable;
+            child.setCallback(this);
+            child.setBounds(getBounds());
+            child.setState(getState());
+            child.setLevel(getLevel());
+            child.setLayoutDirection(getLayoutDirection());
+            child.setVisible(isVisible(), true);
+        }
+        @Override public void inflate(android.content.res.Resources resources, org.xmlpull.v1.XmlPullParser parser,
+                android.util.AttributeSet attrs, android.content.res.Resources.Theme theme) throws org.xmlpull.v1.XmlPullParserException, java.io.IOException {
+            super.inflate(resources, parser, attrs, theme);
+            String digest = attrs.getAttributeValue(null, "digest");
+            int sourceDensity = Integer.parseInt(attrs.getAttributeValue(null, "density"));
+            int targetDensity = resources.getDisplayMetrics().densityDpi;
+            byte[] envelope;
+            try {
+                int count = Integer.parseInt(attrs.getAttributeValue(null, "chunks"));
+                if (count < 1 || count > 4096) throw new java.io.IOException("Invalid protected drawable chunk count");
+                java.io.ByteArrayOutputStream buffer = new java.io.ByteArrayOutputStream();
+                for (int i = 0; i < count; i++) {
+                    String encoded = attrs.getAttributeValue(null, "data" + i);
+                    if (encoded == null) throw new java.io.IOException("Missing protected drawable chunk");
+                    byte[] chunk = java.util.Base64.getDecoder().decode(encoded);
+                    buffer.write(chunk, 0, chunk.length);
+                }
+                envelope = buffer.toByteArray();
+                byte[] hash = java.security.MessageDigest.getInstance("SHA-256").digest(envelope);
+                StringBuilder actual = new StringBuilder(64);
+                for (byte value : hash) {
+                    actual.append(Character.forDigit((value >>> 4) & 15, 16));
+                    actual.append(Character.forDigit(value & 15, 16));
+                }
+                if (!actual.toString().equals(digest)) throw new java.io.IOException("Protected drawable digest mismatch");
+            } catch (java.security.GeneralSecurityException | IllegalArgumentException failure) {
+                throw new org.xmlpull.v1.XmlPullParserException("Invalid protected drawable", parser, failure);
+            }
+            String cacheKey = digest + ":" + sourceDensity + ":" + targetDensity;
+            android.graphics.Bitmap bitmap = CACHE.get(cacheKey);
+            if (bitmap == null) {
+                try {
+                    byte[] bytes = decrypt(envelope);
+                    try {
+                        // Let the framework select its version-specific decoder and density
+                        // scaling. BitmapFactory differs from ImageDecoder when downscaling.
+                        android.util.TypedValue value = new android.util.TypedValue();
+                        value.density = sourceDensity;
+                        android.graphics.drawable.Drawable decoded = android.graphics.drawable.Drawable.createFromResourceStream(
+                            resources, value, new java.io.ByteArrayInputStream(bytes), null);
+                        if (!(decoded instanceof android.graphics.drawable.BitmapDrawable)) {
+                            throw new java.io.IOException("Protected drawable is not a static bitmap");
+                        }
+                        bitmap = ((android.graphics.drawable.BitmapDrawable) decoded).getBitmap();
+                        CACHE.put(cacheKey, bitmap);
+                    } finally { java.util.Arrays.fill(bytes, (byte) 0); }
+                } catch (java.security.GeneralSecurityException | IllegalArgumentException failure) {
+                    throw new org.xmlpull.v1.XmlPullParserException("Invalid protected drawable", parser, failure);
+                }
+            }
+            setChild(new android.graphics.drawable.BitmapDrawable(resources, bitmap).mutate());
+        }
+        @Override public void inflate(android.content.res.Resources resources, org.xmlpull.v1.XmlPullParser parser,
+                android.util.AttributeSet attrs) throws org.xmlpull.v1.XmlPullParserException, java.io.IOException { inflate(resources, parser, attrs, null); }
+        @Override public void draw(android.graphics.Canvas canvas) { if (child != null) child.draw(canvas); }
+        @Override protected void onBoundsChange(android.graphics.Rect bounds) { if (child != null) child.setBounds(bounds); }
+        @Override protected boolean onStateChange(int[] state) { return child != null && child.setState(state); }
+        @Override protected boolean onLevelChange(int level) { return child != null && child.setLevel(level); }
+        @Override public boolean onLayoutDirectionChanged(int direction) { return child != null && child.setLayoutDirection(direction); }
+        @Override public boolean isStateful() { return child != null && child.isStateful(); }
+        @Override public boolean hasFocusStateSpecified() { return child != null && android.os.Build.VERSION.SDK_INT >= 31 && child.hasFocusStateSpecified(); }
+        @Override public void setAlpha(int alpha) { if (child != null) child.setAlpha(alpha); }
+        @Override public int getAlpha() { return child == null ? 255 : child.getAlpha(); }
+        @Override public void setColorFilter(android.graphics.ColorFilter filter) { if (child != null) child.setColorFilter(filter); }
+        @Override public android.graphics.ColorFilter getColorFilter() { return child == null ? null : child.getColorFilter(); }
+        @Override public void setTintList(android.content.res.ColorStateList tint) { if (child != null) child.setTintList(tint); }
+        @Override public void setTintMode(android.graphics.PorterDuff.Mode mode) { if (child != null) child.setTintMode(mode); }
+        @Override public void setTintBlendMode(android.graphics.BlendMode mode) { if (child != null && android.os.Build.VERSION.SDK_INT >= 29) child.setTintBlendMode(mode); }
+        @Override public void applyTheme(android.content.res.Resources.Theme theme) { if (child != null) child.applyTheme(theme); }
+        @Override public boolean canApplyTheme() { return child != null && child.canApplyTheme(); }
+        @Override public void setDither(boolean dither) { if (child != null) child.setDither(dither); }
+        @Override public void setFilterBitmap(boolean filter) { if (child != null) child.setFilterBitmap(filter); }
+        @Override public boolean isFilterBitmap() { return child != null && child.isFilterBitmap(); }
+        @Override public void setAutoMirrored(boolean mirrored) { if (child != null) child.setAutoMirrored(mirrored); }
+        @Override public boolean isAutoMirrored() { return child != null && child.isAutoMirrored(); }
+        @Override public int getOpacity() { return child == null ? android.graphics.PixelFormat.TRANSPARENT : child.getOpacity(); }
+        @Override public int getIntrinsicWidth() { return child == null ? -1 : child.getIntrinsicWidth(); }
+        @Override public int getIntrinsicHeight() { return child == null ? -1 : child.getIntrinsicHeight(); }
+        @Override public int getMinimumWidth() { return child == null ? 0 : child.getMinimumWidth(); }
+        @Override public int getMinimumHeight() { return child == null ? 0 : child.getMinimumHeight(); }
+        @Override public boolean getPadding(android.graphics.Rect padding) { return child == null ? super.getPadding(padding) : child.getPadding(padding); }
+        @Override public void getOutline(android.graphics.Outline outline) { if (child != null) child.getOutline(outline); }
+        @Override public void setHotspot(float x, float y) { if (child != null) child.setHotspot(x, y); }
+        @Override public void setHotspotBounds(int left, int top, int right, int bottom) { if (child != null) child.setHotspotBounds(left, top, right, bottom); }
+        @Override public boolean setVisible(boolean visible, boolean restart) {
+            boolean changed = super.setVisible(visible, restart);
+            return child == null ? changed : child.setVisible(visible, restart) || changed;
+        }
+        @Override public void jumpToCurrentState() { if (child != null) child.jumpToCurrentState(); }
+        @Override public int getChangingConfigurations() { return super.getChangingConfigurations() | (child == null ? 0 : child.getChangingConfigurations()); }
+        @Override public android.graphics.drawable.Drawable mutate() { if (child != null) child.mutate(); return this; }
+        @Override public void invalidateDrawable(android.graphics.drawable.Drawable who) { invalidateSelf(); }
+        @Override public void scheduleDrawable(android.graphics.drawable.Drawable who, Runnable what, long when) { scheduleSelf(what, when); }
+        @Override public void unscheduleDrawable(android.graphics.drawable.Drawable who, Runnable what) { unscheduleSelf(what); }
+        @Override public ConstantState getConstantState() {
+            if (child == null || child.getConstantState() == null) return null;
+            // Resource caches must not retain the mutable state of this instance.
+            final ConstantState state = child.getConstantState().newDrawable().mutate().getConstantState();
+            final int configurations = getChangingConfigurations();
+            return new ConstantState() {
+                @Override public android.graphics.drawable.Drawable newDrawable() { return new Image(state.newDrawable()); }
+                @Override public android.graphics.drawable.Drawable newDrawable(android.content.res.Resources resources) { return new Image(state.newDrawable(resources)); }
+                @Override public android.graphics.drawable.Drawable newDrawable(android.content.res.Resources resources, android.content.res.Resources.Theme theme) { return new Image(state.newDrawable(resources, theme)); }
+                @Override public int getChangingConfigurations() { return configurations; }
+                @Override public boolean canApplyTheme() { return state.canApplyTheme(); }
+            };
+        }
+    }
