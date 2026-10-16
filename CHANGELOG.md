@@ -1,3 +1,8 @@
+# Android Hardening Gradle Plugin 1.5.1 (local)
+
+- Sanitize invalid macOS `DEVELOPER_DIR` values before every Git subprocess used by source and mapping analysis. A stale Xcode path now falls back to the installed command-line tools while valid developer directories remain unchanged.
+- Keep genuine Git repository, ignore-rule, and configuration failures fail-closed with their original diagnostics.
+
 # Android Hardening Gradle Plugin 1.5.0 (local)
 
 - Repair inline resource ID, inherited reader, packaged dependency, and owned forwarding-reader analysis for runtime strings and assets. Unproven references remain excluded.

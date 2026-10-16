@@ -6,7 +6,10 @@ import java.nio.file.Path
 
 internal object GitRepositoryLocation {
     fun infoExclude(root: Path, gitExecutable: String = "git"): Path? {
-        val process = ProcessBuilder(gitExecutable, "-C", root.toString(), "rev-parse", "--git-path", "info/exclude")
+        val process = gitProcessBuilder(
+            gitExecutable,
+            listOf("-C", root.toString(), "rev-parse", "--git-path", "info/exclude"),
+        )
             .redirectErrorStream(true)
             .apply { environment()["LC_ALL"] = "C" }
             .start()
@@ -23,3 +26,14 @@ internal object GitRepositoryLocation {
         return (if (path.isAbsolute) path else root.resolve(path)).toAbsolutePath().normalize()
     }
 }
+
+internal fun gitProcessBuilder(gitExecutable: String, arguments: List<String>): ProcessBuilder =
+    ProcessBuilder(listOf(gitExecutable) + arguments).apply {
+        val developerDirectory = environment()["DEVELOPER_DIR"]
+        val hasUsableDeveloperDirectory = developerDirectory?.takeIf(String::isNotBlank)?.let { value ->
+            runCatching { Files.isDirectory(Path.of(value)) }.getOrDefault(false)
+        } == true
+        if (!hasUsableDeveloperDirectory) {
+            environment().remove("DEVELOPER_DIR")
+        }
+    }

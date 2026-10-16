@@ -28,6 +28,7 @@ import com.holin.android.hardening.code.R8CodeMappingRenderer
 import com.holin.android.hardening.code.SerializableKeepNamesRulesRenderer
 import com.holin.android.hardening.code.fieldRegistryIdentity
 import com.holin.android.hardening.inventory.OwnedCodeOptimizationRules
+import com.holin.android.hardening.inventory.gitProcessBuilder
 import com.holin.android.hardening.naming.PseudowordRegistry
 import com.holin.android.hardening.naming.RegistryCodec
 import com.holin.android.hardening.naming.RegistrySnapshot
@@ -436,7 +437,7 @@ abstract class GenerateHardeningCodeMappingTask : DefaultTask() {
 
     private fun gitPath(arguments: List<String>, optional: Boolean = false): Path? {
         val root = repositoryRoot.get().asFile.toPath().toAbsolutePath().normalize()
-        val process = ProcessBuilder(listOf("git", "-C", root.toString()) + arguments)
+        val process = gitProcessBuilder("git", listOf("-C", root.toString()) + arguments)
             .redirectErrorStream(true)
             .start()
         val output = process.inputStream.use { it.readBytes().toString(Charsets.UTF_8).trim() }

@@ -31,7 +31,10 @@ class GitIgnoreMatcher(
         // Reuse Git's complete ignore semantics for source archives, without creating a consumer repository.
         val metadata = Files.createTempDirectory("hardening-source-git-")
         return try {
-            val init = ProcessBuilder(gitExecutable, "init", "--bare", "--template=", metadata.toString())
+            val init = gitProcessBuilder(
+                gitExecutable,
+                listOf("init", "--bare", "--template=", metadata.toString()),
+            )
                 .redirectErrorStream(true).start()
             val output = init.inputStream.use { it.readBytes().toString(UTF_8).trim() }
             check(init.waitFor() == 0) { "temporary Git metadata initialization failed: $output" }
@@ -42,8 +45,10 @@ class GitIgnoreMatcher(
     }
 
     private fun checkIgnored(byGitPath: Map<String, Path>, context: List<String>): Set<Path> {
-        val process = ProcessBuilder(listOf(gitExecutable, "-C", root.toString()) + context +
-            listOf("check-ignore", "--no-index", "--stdin", "-z")).start()
+        val process = gitProcessBuilder(
+            gitExecutable,
+            listOf("-C", root.toString()) + context + listOf("check-ignore", "--no-index", "--stdin", "-z"),
+        ).start()
         val errorBytes = ByteArrayOutputStream()
         val outputBytes = ByteArrayOutputStream()
         val errorReader = thread(true, true, null, "git-check-ignore-stderr") {
