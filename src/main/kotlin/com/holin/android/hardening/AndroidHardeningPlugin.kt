@@ -712,6 +712,7 @@ internal class AgpHardeningAdapter {
             )
             categoryReport.set(project.layout.buildDirectory.file("reports/hardening/$variant/category-report.json"))
             controlledTransformationReport.set(project.layout.buildDirectory.file("reports/hardening/$variant/controlled-transformations.json"))
+            runtimeStringReport.set(project.layout.buildDirectory.file("reports/hardening/$variant/runtime-strings-final.json"))
             ownedArtifactInventory.set(
                 project.layout.buildDirectory.file(
                     invocationDirectory.map { directory -> "$directory/owned-artifact-inventory.json" },

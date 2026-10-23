@@ -27,7 +27,6 @@ import org.gradle.api.tasks.TaskAction
 import org.gradle.work.DisableCachingByDefault
 import java.nio.file.Files
 import java.util.Base64
-import java.util.zip.ZipFile
 import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
 import javax.tools.ToolProvider
@@ -41,9 +40,11 @@ abstract class ProtectHardeningRuntimeTask : DefaultTask() {
     @get:InputFiles @get:PathSensitive(PathSensitivity.RELATIVE) abstract val sourceInputs: ConfigurableFileCollection
     @get:Input abstract val sourceOwnership: ListProperty<String>
     @get:Input abstract val namespace: Property<String>
+    @get:Input abstract val variantName: Property<String>
     @get:Input abstract val minimumSdk: Property<Int>
     @get:Input abstract val policy: Property<String>
     @get:InputFile @get:PathSensitive(PathSensitivity.NONE) abstract val inputManifest: RegularFileProperty
+    @get:org.gradle.api.tasks.Optional @get:InputFile @get:PathSensitive(PathSensitivity.NONE) abstract val resourceSymbols: RegularFileProperty
     @get:InputFile @get:PathSensitive(PathSensitivity.NONE) abstract val lineageSeed: RegularFileProperty
     @get:Internal abstract val ownership: Property<HardeningOwnership>
     @get:Internal abstract val repositoryRoot: DirectoryProperty
@@ -53,6 +54,8 @@ abstract class ProtectHardeningRuntimeTask : DefaultTask() {
     @get:OutputFile abstract val report: RegularFileProperty
     @get:OutputDirectory abstract val generatedDirectory: DirectoryProperty
 
+    init { variantName.convention(name) }
+
     @TaskAction fun protect() {
         val configuration = RuntimeProtectionPolicy.decode(policy.get())
         require(!configuration.images.enabled || minimumSdk.get() >= 26) { "runtime image protection requires minSdk 26 or newer" }
@@ -60,37 +63,26 @@ abstract class ProtectHardeningRuntimeTask : DefaultTask() {
         val key = RuntimeEnvelope.key(seed)
         val helper = RuntimeEnvelope.helper(seed)
         seed.fill(0)
-        val entries = sortedMapOf<String, ByteArray>()
-        fun add(name: String, bytes: ByteArray) {
-            require(!name.startsWith('/') && name.split('/').none { it == ".." || it == "." }) { "invalid class archive entry" }
-            val prior = entries.putIfAbsent(name, bytes)
-            require(prior == null || prior.contentEquals(bytes)) { "conflicting runtime program entry $name" }
-        }
-        inputJars.get().forEach { jar -> ZipFile(jar.asFile).use { zip -> zip.entries().asSequence().filterNot { it.isDirectory }.forEach { entry ->
-            if (entry.name.endsWith(".class") && entry.name != "module-info.class" && !entry.name.startsWith("META-INF/")) {
-                add(entry.name, zip.getInputStream(entry).use { it.readBytes() })
-            }
-        } } }
-        inputDirectories.get().forEach { directory -> Files.walk(directory.asFile.toPath()).use { files -> files.forEach { file ->
-            require(!Files.isSymbolicLink(file)) { "symbolic program class input" }
-            if (Files.isRegularFile(file)) add(directory.asFile.toPath().relativize(file).toString().replace('\\', '/'), Files.readAllBytes(file))
-        } } }
+        val root = repositoryRoot.get().asFile.toPath().toAbsolutePath().normalize()
+        val inputs = com.holin.android.hardening.runtime.RuntimeReaderInputs.read(inputJars.get().map { it.asFile },
+            inputDirectories.get().map { it.asFile }, bootClasspath.files, sourceInputs.files, root, namespace.get(), resourceSymbols.orNull?.asFile)
+        val entries = inputs.entries.toSortedMap()
         require("$helper.class" !in entries) { "runtime helper collides with a program class" }
-        val hierarchy = linkedMapOf<String, ByteArray>()
-        // ALL-scoped inputs already include every packaged dependency. Compile-only
-        // artifacts are not executable readers of the delivered application.
-        bootClasspath.files.filter { it.isFile && it.extension == "jar" }.forEach { jar -> ZipFile(jar).use { zip ->
-            zip.entries().asSequence().filter { it.name.endsWith(".class") && !it.name.startsWith("META-INF/") && it.name != "module-info.class" }.forEach { entry ->
-                hierarchy.putIfAbsent(entry.name.removeSuffix(".class"), zip.getInputStream(entry).use { it.readBytes() })
-            }
-        } }
-        val root = repositoryRoot.get().asFile.toPath()
         val owned = OwnedDexInventoryBuilder(root, ownership.get()).sourceInventory().mapTo(linkedSetOf()) {
             it.originalDescriptor.removePrefix("L").removeSuffix(";")
         }
-        val xml = sourceInputs.files.filter { it.isFile && it.extension == "xml" }.associate { it.path to it.readText() }
-        val adapted = RuntimeBytecodeAdapter.adapt(entries.filterKeys { it.endsWith(".class") }.mapKeys { it.key.removeSuffix(".class") },
-            hierarchy, owned, namespace.get(), xml, configuration, helper)
+        val xml = inputs.xml
+        val analysis = RuntimeBytecodeAdapter.analyze(inputs.classes, inputs.hierarchy, owned, namespace.get(), xml, configuration)
+        val context = mapOf("variant" to variantName.get(), "inputFingerprint" to
+            com.holin.android.hardening.runtime.RuntimeStringDiagnostics.fingerprint(configuration, namespace.get(), inputs.classes, inputs.hierarchy, xml),
+            "productionSourceFilesModified" to false)
+        val readerReport = analysis.report + context + mapOf("status" to analysis.stringReport.getValue("status"))
+        report.get().asFile.apply { parentFile.mkdirs(); writeText(JsonOutput.prettyPrint(JsonOutput.toJson(readerReport))) }
+        analysis.requireStrings(report.get().asFile.path)
+        analysis.requireAssets()
+        val skipped = configuration.candidateStrings - analysis.stringNames
+        if (skipped.isNotEmpty()) logger.warn("{} candidate runtime strings have unsupported readers; report: {}", skipped.size, report.get().asFile)
+        val adapted = RuntimeBytecodeAdapter.apply(inputs.classes, analysis, helper)
         val assetHashes = linkedMapOf<String, String>()
         val assetSkips = linkedMapOf<String, String>()
         if (adapted.assetsClosed) configuration.assetPaths.sorted().forEach { path ->
@@ -159,9 +151,9 @@ abstract class ProtectHardeningRuntimeTask : DefaultTask() {
         } }
         closure.get().asFile.apply { parentFile.mkdirs(); writeText(JsonOutput.toJson(mapOf("schemaVersion" to 1,
             "policy" to configuration.encode(), "strings" to adapted.stringNames.sorted(), "assets" to assetHashes,
-            "images" to closedImages.sorted(), "helper" to if (active) helper else "", "classJarSha256" to Sha256.file(output.toPath())))) }
+            "images" to closedImages.sorted(), "stringAnalysis" to analysis.stringReport, "helper" to if (active) helper else "", "classJarSha256" to Sha256.file(output.toPath())))) }
         keepRules.get().asFile.apply { parentFile.mkdirs(); writeText(if (active) "-keep class ${helper.replace('/', '.')} { *; }\n-keep class ${helper.replace('/', '.')}\$* { *; }\n" else "# No closed runtime readers.\n") }
-        report.get().asFile.apply { parentFile.mkdirs(); writeText(JsonOutput.prettyPrint(JsonOutput.toJson(adapted.report + mapOf("ownedAssetHashes" to assetHashes, "assetCoverage" to assetCoverage, "assetSkips" to assetSkips,
+        report.get().asFile.apply { parentFile.mkdirs(); writeText(JsonOutput.prettyPrint(JsonOutput.toJson(adapted.report + context + mapOf("ownedAssetHashes" to assetHashes, "assetCoverage" to assetCoverage, "assetSkips" to assetSkips,
             "images" to imageAudit.map { (name, reasons) -> mapOf("name" to name, "closed" to reasons.isEmpty(), "reasons" to reasons.sorted()) },
             "helper" to if (active) helper else "", "productionSourceFilesModified" to false)))) }
         key.fill(0)

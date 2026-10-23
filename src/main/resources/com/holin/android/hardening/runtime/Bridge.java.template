@@ -84,6 +84,24 @@ public final class Bridge {
         return value instanceof String ? decode((String) value) : value;
     }
 
+    public static void setText(android.widget.TextView view, int id) {
+        CharSequence value = view.getContext().getResources().getText(id);
+        if (value instanceof String && ((String) value).startsWith(PREFIX)) {
+            view.setText(decode((String) value));
+        } else {
+            view.setText(id);
+        }
+    }
+
+    public static void setText(android.widget.TextView view, int id, android.widget.TextView.BufferType type) {
+        CharSequence value = view.getContext().getResources().getText(id);
+        if (value instanceof String && ((String) value).startsWith(PREFIX)) {
+            view.setText(decode((String) value), type);
+        } else {
+            view.setText(id, type);
+        }
+    }
+
     private static String protectedPath(String path) throws java.security.GeneralSecurityException {
         if (path == null || ASSETS.isEmpty()) return null;
         java.security.MessageDigest digest = java.security.MessageDigest.getInstance("SHA-256");

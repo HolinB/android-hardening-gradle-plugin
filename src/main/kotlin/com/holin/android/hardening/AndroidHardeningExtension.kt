@@ -15,6 +15,7 @@ import org.gradle.api.file.ProjectLayout
 import org.gradle.api.file.RegularFileProperty
 import org.gradle.api.model.ObjectFactory
 import org.gradle.api.provider.Property
+import org.gradle.api.provider.MapProperty
 import org.gradle.api.provider.Provider
 import org.gradle.api.provider.SetProperty
 
@@ -555,13 +556,18 @@ open class ComponentsSpec @Inject constructor(objects: ObjectFactory) {
 open class RuntimeProtectionSpec @Inject constructor(objects: ObjectFactory) {
     val strings: SetProperty<String> = objects.setProperty(String::class.java).convention(emptySet())
     val minimumStringCoverage: Property<Double> = objects.property(Double::class.java).convention(0.0)
+    val requiredStrings: SetProperty<String> = objects.setProperty(String::class.java).convention(emptySet())
+    val candidateStrings: SetProperty<String> = objects.setProperty(String::class.java).convention(emptySet())
+    val excludedStrings: MapProperty<String, String> = objects.mapProperty(String::class.java, String::class.java).convention(emptyMap())
+    val adaptTextViewResourceSetters: Property<Boolean> = objects.property(Boolean::class.java).convention(false)
     val assetPaths: SetProperty<String> = objects.setProperty(String::class.java).convention(emptySet())
     val assetReaders: SetProperty<String> = objects.setProperty(String::class.java).convention(emptySet())
     val minimumAssetCoverage: Property<Double> = objects.property(Double::class.java).convention(0.0)
     val images: RuntimeImagesSpec = objects.newInstance(RuntimeImagesSpec::class.java)
     fun images(action: Action<in RuntimeImagesSpec>) = action.execute(images)
     fun policy() = com.holin.android.hardening.runtime.RuntimeProtectionPolicy(strings.get(), minimumStringCoverage.get(),
-        assetPaths.get(), assetReaders.get(), minimumAssetCoverage.get(), images.policy())
+        assetPaths.get(), assetReaders.get(), minimumAssetCoverage.get(), images.policy(), requiredStrings.get(), candidateStrings.get(),
+        excludedStrings.get(), adaptTextViewResourceSetters.get())
 }
 
 open class RuntimeImagesSpec @Inject constructor(objects: ObjectFactory) {

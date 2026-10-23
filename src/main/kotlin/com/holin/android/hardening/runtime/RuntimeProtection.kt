@@ -16,29 +16,47 @@ data class RuntimeProtectionPolicy(
     val assetReaders: Set<String> = emptySet(),
     val minimumAssetCoverage: Double = 0.0,
     val images: RuntimeImagePolicy = RuntimeImagePolicy(),
+    val requiredStrings: Set<String> = emptySet(),
+    val candidateStrings: Set<String> = emptySet(),
+    val excludedStrings: Map<String, String> = emptyMap(),
+    val adaptTextViewResourceSetters: Boolean = false,
 ) {
     init {
         require(minimumStringCoverage.isFinite() && minimumStringCoverage in 0.0..1.0)
         require(minimumAssetCoverage.isFinite() && minimumAssetCoverage in 0.0..1.0)
-        strings.forEach { require(Regex("[a-z][a-z0-9_]*").matches(it)) }
+        val groups = listOf(strings, requiredStrings, candidateStrings, excludedStrings.keys)
+        groups.flatten().forEach { require(Regex("[a-z][a-z0-9_]*").matches(it)) { "invalid runtime string name: $it" } }
+        val conflicts = groups.flatten().groupingBy { it }.eachCount().filterValues { it > 1 }.keys.sorted()
+        require(conflicts.isEmpty()) { "runtime string groups overlap: $conflicts" }
+        require(excludedStrings.values.all { it.isNotBlank() }) { "excluded runtime strings require a nonblank reason" }
         assetPaths.forEach { require(it.isNotBlank() && !it.startsWith('/') && '\\' !in it && it.split('/').none { part -> part in setOf(".", "..", "") }) }
         assetReaders.forEach { require('#' in it && '(' in it && ')' in it) { "assetReaders use internal/Class#method(descriptor)" } }
         require(assetPaths.isEmpty() || assetReaders.isNotEmpty()) { "asset containers require explicit owned reader methods" }
     }
-    val enabled: Boolean get() = strings.isNotEmpty() || assetPaths.isNotEmpty() || images.enabled
-    fun encode(): String = JsonOutput.toJson(mapOf("schemaVersion" to 1, "strings" to strings.sorted(),
+    val selectedStrings: Set<String> get() = strings + requiredStrings + candidateStrings
+    val declaredStrings: Set<String> get() = selectedStrings + excludedStrings.keys
+    val hasStringGroups: Boolean get() = requiredStrings.isNotEmpty() || candidateStrings.isNotEmpty() || excludedStrings.isNotEmpty()
+    val extended: Boolean get() = hasStringGroups || adaptTextViewResourceSetters
+    val enabled: Boolean get() = declaredStrings.isNotEmpty() || assetPaths.isNotEmpty() || images.enabled
+    fun encode(): String = JsonOutput.toJson(mapOf("schemaVersion" to if (extended) 2 else 1, "strings" to strings.sorted(),
         "minimumStringCoverage" to minimumStringCoverage, "assetPaths" to assetPaths.sorted(),
         "assetReaders" to assetReaders.sorted(), "minimumAssetCoverage" to minimumAssetCoverage) +
-        if (images.enabled) mapOf("images" to images.values()) else emptyMap())
+        (if (images.enabled) mapOf("images" to images.values()) else emptyMap()) +
+        (if (extended) mapOf("requiredStrings" to requiredStrings.sorted(), "candidateStrings" to candidateStrings.sorted(),
+            "excludedStrings" to excludedStrings.toSortedMap(), "adaptTextViewResourceSetters" to adaptTextViewResourceSetters) else emptyMap()))
     companion object {
         fun decode(text: String): RuntimeProtectionPolicy {
             StrictJson.validateDocument(text)
             val p = JsonSlurper().parseText(text) as Map<*, *>
-            require(p["schemaVersion"] == 1)
+            require(p["schemaVersion"] in setOf(1, 2)) { "unsupported runtime policy schema" }
             fun names(key: String) = (p[key] as List<*>).map { it as String }.toSet()
             return RuntimeProtectionPolicy(names("strings"), (p["minimumStringCoverage"] as Number).toDouble(),
                 names("assetPaths"), names("assetReaders"), (p["minimumAssetCoverage"] as Number).toDouble(),
-                (p["images"] as? Map<*, *>)?.let(RuntimeImagePolicy::read) ?: RuntimeImagePolicy())
+                (p["images"] as? Map<*, *>)?.let(RuntimeImagePolicy::read) ?: RuntimeImagePolicy(),
+                if (p["schemaVersion"] == 2) names("requiredStrings") else emptySet(),
+                if (p["schemaVersion"] == 2) names("candidateStrings") else emptySet(),
+                if (p["schemaVersion"] == 2) (p["excludedStrings"] as Map<*, *>).entries.associate { it.key as String to it.value as String } else emptyMap(),
+                if (p["schemaVersion"] == 2) p["adaptTextViewResourceSetters"] as Boolean else false)
         }
     }
 }
@@ -80,23 +98,76 @@ data class RuntimeStringScope(val names: Set<String>, val key: ByteArray, val mi
 
 data class RuntimeStringPlan(val table: ByteArray, val ids: Set<Int>, val report: Map<String, Any>)
 
+data class RuntimeStringResourceAnalysis(val names: Set<String>, val report: Map<String, Any>)
+
 object RuntimeStringResources {
-    fun transform(bytes: ByteArray, scope: RuntimeStringScope, salt: ByteArray, entries: Map<String, ByteArray> = emptyMap()): RuntimeStringPlan {
-        val table = com.android.aapt.Resources.ResourceTable.parseFrom(bytes)
-        val referenced = linkedSetOf<Int>()
-        fun visit(message: com.google.protobuf.Message) {
-            if (message is com.android.aapt.Resources.Reference && message.id != 0) referenced += message.id
+    private fun plain(entry: com.android.aapt.Resources.Entry): Boolean = entry.configValueCount > 0 && entry.configValueList.all {
+        it.value.hasItem() && it.value.item.hasStr() &&
+            !it.value.item.str.value.startsWith("res/") && !it.value.item.str.value.startsWith("assets/") &&
+            !Regex("(?i).*\\.(png|webp|jpe?g|xml)").matches(it.value.item.str.value)
+    }
+
+    private fun references(table: com.android.aapt.Resources.ResourceTable, entries: Map<String, ByteArray>): Map<Int, Set<String>> {
+        val referenced = linkedMapOf<Int, MutableSet<String>>()
+        fun visit(message: com.google.protobuf.Message, path: String) {
+            if (message is com.android.aapt.Resources.Reference && message.id != 0) referenced.getOrPut(message.id) { linkedSetOf() }.add(path)
             message.allFields.values.forEach { value ->
                 when (value) {
-                    is com.google.protobuf.Message -> visit(value)
-                    is List<*> -> value.filterIsInstance<com.google.protobuf.Message>().forEach(::visit)
+                    is com.google.protobuf.Message -> visit(value, path)
+                    is List<*> -> value.filterIsInstance<com.google.protobuf.Message>().forEach { visit(it, path) }
                 }
             }
         }
-        visit(table)
-        entries.filterKeys { it.endsWith(".xml") }.values.forEach { xml ->
-            runCatching { com.android.aapt.Resources.XmlNode.parseFrom(xml) }.getOrNull()?.let(::visit)
+        visit(table, "base/resources.pb")
+        entries.filterKeys { it.endsWith(".xml") }.toSortedMap().forEach { (path, xml) ->
+            runCatching { com.android.aapt.Resources.XmlNode.parseFrom(xml) }.getOrNull()?.let { visit(it, path) }
         }
+        return referenced
+    }
+
+    fun analyze(bytes: ByteArray, policy: RuntimeProtectionPolicy, closed: Set<String>, owned: Set<String>,
+        namespace: String, entries: Map<String, ByteArray>, readerAnalysis: Map<String, Any> = emptyMap()): RuntimeStringResourceAnalysis {
+        val table = com.android.aapt.Resources.ResourceTable.parseFrom(bytes)
+        val referenced = references(table, entries)
+        val found = linkedMapOf<String, MutableList<Pair<Int, com.android.aapt.Resources.Entry>>>()
+        table.packageList.forEach { pkg -> pkg.typeList.filter { it.name == "string" }.forEach { type -> type.entryList.forEach { entry ->
+            if (entry.name in policy.selectedStrings) {
+                val id = (pkg.packageId.id shl 24) or (type.typeId.id shl 16) or entry.entryId.id
+                found.getOrPut(entry.name) { mutableListOf() }.add(id to entry)
+            }
+        } } }
+        val reasons = linkedMapOf<String, List<RuntimeStringIssue>>()
+        val eligible = linkedSetOf<String>()
+        policy.selectedStrings.sorted().forEach { name ->
+            val matches = found[name].orEmpty()
+            val rejected = mutableListOf<RuntimeStringIssue>()
+            if (matches.isEmpty()) rejected += RuntimeStringIssue("ABSENT_AFTER_R8")
+            if (matches.size > 1) rejected += RuntimeStringIssue("AMBIGUOUS_RESOURCE_ID")
+            if (name !in closed) rejected += RuntimeStringIssue("READERS_NOT_CLOSED")
+            if (name !in owned) rejected += RuntimeStringIssue("NOT_OWNED")
+            matches.forEach { (id, entry) ->
+                referenced[id].orEmpty().sorted().forEach { path -> rejected += RuntimeStringIssue("COMPILED_XML_OR_RESOURCE_REFERENCE",
+                    mapOf("file" to path, "resourceId" to id.toUInt().toString(16))) }
+                if (!plain(entry)) rejected += RuntimeStringIssue("ALIASED_RICH_OR_UNSUPPORTED_VALUE", mapOf("resourceId" to id.toUInt().toString(16)))
+            }
+            if (rejected.isEmpty()) eligible += name else reasons[name] = rejected
+        }
+        val baseReport = RuntimeStringDiagnostics.report(policy, closed, null, reasons, emptyMap(), namespace, "FINAL", eligible)
+        val readerRows = (readerAnalysis["entries"] as? List<*>)?.filterIsInstance<Map<*, *>>()?.associateBy { it["name"] }.orEmpty()
+        @Suppress("UNCHECKED_CAST")
+        val rows = (baseReport["entries"] as List<Map<String, Any>>).map { row ->
+            val prior = readerRows[row["name"]]
+            row + mapOf("readers" to (prior?.get("readers") ?: emptyList<Any>()),
+                "reasons" to ((row["reasons"] as List<*>) + (prior?.get("reasons") as? List<*> ?: emptyList<Any>())).distinct())
+        }
+        val report = baseReport + mapOf("entries" to rows) +
+            mapOf("resourceTableSha256" to Sha256.hex(bytes))
+        return RuntimeStringResourceAnalysis(eligible, report)
+    }
+
+    fun transform(bytes: ByteArray, scope: RuntimeStringScope, salt: ByteArray, entries: Map<String, ByteArray> = emptyMap()): RuntimeStringPlan {
+        val table = com.android.aapt.Resources.ResourceTable.parseFrom(bytes)
+        val referenced = references(table, entries)
         val builder = table.toBuilder()
         val ids = linkedSetOf<Int>()
         val rows = mutableListOf<Map<String, Any>>()
@@ -107,11 +178,7 @@ object RuntimeStringResources {
                 if (entry.name !in scope.names) return@entryLoop
                 seen += entry.name
                 val id = (pkg.packageId.id shl 24) or (type.typeId.id shl 16) or entry.entryId.id
-                val eligible = id !in referenced && entry.configValueCount > 0 && entry.configValueList.all {
-                    it.value.hasItem() && it.value.item.hasStr() &&
-                        !it.value.item.str.value.startsWith("res/") && !it.value.item.str.value.startsWith("assets/") &&
-                        !Regex("(?i).*\\.(png|webp|jpe?g|xml)").matches(it.value.item.str.value)
-                }
+                val eligible = id !in referenced && plain(entry)
                 if (eligible) {
                     entry.configValueList.forEachIndexed { ci, value ->
                         val encrypted = RuntimeEnvelope.encodeString(value.value.item.str.value, scope.key,

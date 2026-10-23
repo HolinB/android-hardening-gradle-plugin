@@ -29,6 +29,19 @@ internal object HardeningWiringGate {
         task.belongsTo(projectPath) && isHardeningTaskName(task.name, variantName)
     }
 
+    fun requireSeparateRuntimePreflight(variantName: String, requestedTasks: List<String>, projectPath: String) {
+        val suffix = HardeningNames.taskSuffix(variantName)
+        val names = requestedTasks.map(RequestedTask::parse).filter { it.belongsTo(projectPath) }.map { it.name }
+        val preflight = "checkHardening${suffix}RuntimeStrings"
+        val hasPreflight = names.any { it.equals(preflight, true) }
+        val hasHardening = names.any { isHardeningTaskName(it, variantName) ||
+            it.equals("assemble${suffix}Hardening", true) || it.equals("bundle${suffix}Hardening", true) ||
+            it.equals("protectHardening${suffix}Runtime", true) }
+        require(!hasPreflight || !hasHardening) {
+            "$preflight and complete Hardening for $variantName must run in separate invocations; preflight requires original compiled classes."
+        }
+    }
+
     fun conflictingProjectArtifactTasks(
         requestedTasks: List<String>,
         includedVariants: Set<String>,

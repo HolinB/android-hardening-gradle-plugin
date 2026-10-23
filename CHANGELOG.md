@@ -1,3 +1,11 @@
+# Android Hardening Gradle Plugin 1.5.2 (local)
+
+- Add required, candidate, and explicitly excluded string groups while preserving legacy string coverage thresholds and configuration identity.
+- Write complete reader and final resource diagnostics before policy failures, and add independent `checkHardening<Variant>RuntimeStrings` preflight tasks.
+- Track resource IDs through supported arrays, lists, aliases, copies, fields, and packaged method calls; unknown consumers remain excluded.
+- Add opt-in adaptation for TextView resource setters through the generated runtime bridge. XML, theme, alias, and unsupported framework readers retain their existing exclusion boundaries.
+- Align documentation, existing TestKit version references, and CI archive names with 1.5.2. Offline TestKit archives remain local build outputs.
+
 # Android Hardening Gradle Plugin 1.5.1 (local)
 
 - Sanitize invalid macOS `DEVELOPER_DIR` values before every Git subprocess used by source and mapping analysis. A stale Xcode path now falls back to the installed command-line tools while valid developer directories remain unchanged.

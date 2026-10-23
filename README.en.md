@@ -1,12 +1,12 @@
-# Android Hardening Gradle Plugin 1.5.1 (local validation build)
+# Android Hardening Gradle Plugin 1.5.2 (local validation build)
 
-[Chinese](README.md) | [Changelog](CHANGELOG.md) | [1.5.1 detailed guide (Chinese)](docs/PLUGIN_GUIDE_1_5_1_ZH.md) | [Controlled transformations](docs/controlled-transformations.md)
+[Chinese](README.md) | [Changelog](CHANGELOG.md) | [1.5.2 detailed guide (Chinese)](docs/PLUGIN_GUIDE_1_5_2_ZH.md) | [Controlled transformations](docs/controlled-transformations.md)
 
-Version 1.5.1 fixes Git subprocesses inheriting an invalid macOS `DEVELOPER_DIR`; version 1.5.0 adds resource string/asset
-reader analysis and opt-in `runtimeProtection.images`. It is delivered as a separate local Maven package without
+Version 1.5.2 adds tiered string protection, independent preflight checks, resource ID container propagation, and opt-in
+TextView resource setter adaptation. It retains the Git environment fix from 1.5.1 and runtime content protection from 1.5.0, and is delivered as a separate local Maven package without
 replacing 1.4.2. Verify
-`build/distributions/hardening-gradle-plugin-1.5.1-portable-maven.zip.sha256`, extract it, verify `SHA256SUMS`, then use
-plugin version `1.5.1` with `-PhardeningPluginRepo=<extracted directory>/repository` and the consumer's `./gradlew`.
+`build/distributions/hardening-gradle-plugin-1.5.2-portable-maven.zip.sha256`, extract it, verify `SHA256SUMS`, then use
+plugin version `1.5.2` with `-PhardeningPluginRepo=<extracted directory>/repository` and the consumer's `./gradlew`.
 The published 1.4.2 download instructions and launcher checksum below still refer to the published release.
 See [runtime resource protection](docs/runtime-content-protection.md) for eligibility and reporting.
 

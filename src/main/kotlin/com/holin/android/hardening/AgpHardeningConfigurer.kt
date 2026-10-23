@@ -29,6 +29,7 @@ import com.holin.android.hardening.tasks.VerifyHardeningTask
 import com.holin.android.hardening.tasks.CaptureHardeningBaselineTask
 import com.holin.android.hardening.tasks.CompareHardeningSimilarityTask
 import com.holin.android.hardening.tasks.ProtectHardeningRuntimeTask
+import com.holin.android.hardening.tasks.CheckHardeningRuntimeStringsTask
 import com.holin.android.hardening.tasks.RelocateHardeningManifestTask
 import com.holin.android.hardening.tasks.RelocateHardeningClassesTask
 import com.holin.android.hardening.tasks.ComposeHardeningMappingTask
@@ -96,6 +97,11 @@ internal object AgpHardeningConfigurer {
         val androidComponents = project.extensions.getByType(ApplicationAndroidComponentsExtension::class.java)
         val hardeningEnabled = HardeningWiringGate.isEnabled(project.gradle.startParameter.projectProperties)
         var signingSnapshot: SigningDslSnapshot? = null
+        androidComponents.finalizeDsl {
+            extension.variants.included.get().forEach { variant ->
+                HardeningWiringGate.requireSeparateRuntimePreflight(variant, project.gradle.startParameter.taskNames, project.path)
+            }
+        }
         if (hardeningEnabled) {
             androidComponents.finalizeDsl { android ->
                 val requestedBuildTypes = HardeningWiringGate.requestedBuildTypes(
@@ -137,6 +143,7 @@ internal object AgpHardeningConfigurer {
         androidComponents.onVariants(androidComponents.selector().all()) { variant ->
             val included = extension.variants.included.get()
             if (!HardeningWiringGate.isSelected(variant.name, included)) return@onVariants
+            extension.runtimeProtection.policy()
             val variantWiringEnabled = hardeningEnabled && HardeningWiringGate.isHardeningTaskRequested(
                 variantName = variant.name,
                 requestedTasks = project.gradle.startParameter.taskNames,
@@ -163,6 +170,7 @@ internal object AgpHardeningConfigurer {
                     },
                 ),
             )
+            wireRuntimeStringPreflight(project, extension, androidComponents, variant, variantWiringEnabled)
             if (variantWiringEnabled) {
                 val effectiveR8Rules = wireFilteredAppRules(project, extension, variant, tasks)
                 wireRuntimeProtection(project, extension, androidComponents, variant, tasks)
@@ -177,6 +185,40 @@ internal object AgpHardeningConfigurer {
                     componentPlan,
                 )
                 wireDependencies(project, extension, variant, tasks)
+            }
+        }
+    }
+
+    private fun wireRuntimeStringPreflight(project: Project, extension: AndroidHardeningExtension,
+        androidComponents: ApplicationAndroidComponentsExtension, variant: ApplicationVariant, wiringEnabled: Boolean) {
+        val suffix = HardeningNames.taskSuffix(variant.name)
+        val resolved = project.providers.provider { extension.ownership.resolve(project.rootProject) }
+        val preflight = project.tasks.register("checkHardening${suffix}RuntimeStrings", CheckHardeningRuntimeStringsTask::class.java) {
+            group = "hardening"
+            description = "Checks original compiled runtime string readers; final AAB checks remain required."
+            namespace.set(variant.namespace)
+            variantName.set(variant.name)
+            policy.set(project.providers.provider { extension.runtimeProtection.policy().encode() })
+            repositoryRoot.set(project.rootProject.layout.projectDirectory)
+            sourceOwnership.set(resolved.map { it.modules.map { module -> "${module.path}:${module.sourceSets.sorted()}" } })
+            sourceInputs.from(resolved.map { owned -> owned.modules.filter { it.path != project.path }.flatMap { module ->
+                module.sourceRoots.resourceDirectories.map { root -> project.fileTree(root) { include("**/*.xml") } }
+            } })
+            sourceInputs.from(project.files(variant.sources.res?.all).asFileTree, variant.artifacts.get(SingleArtifact.MERGED_MANIFEST))
+            bootClasspath.from(androidComponents.sdkComponents.bootClasspath)
+            resourceSymbols.set(variant.artifacts.get(SingleArtifact.RUNTIME_SYMBOL_LIST))
+            inputJars.convention(emptyList())
+            inputDirectories.convention(emptyList())
+            report.set(project.layout.buildDirectory.file("reports/hardening/${variant.name}/runtime-strings-preflight.json"))
+        }
+        // toGet observes the final scoped artifact. Never attach it to a transformed pipeline.
+        if (!wiringEnabled) variant.artifacts.forScope(ScopedArtifacts.Scope.ALL).use(preflight).toGet(
+            ScopedArtifact.CLASSES, CheckHardeningRuntimeStringsTask::inputJars, CheckHardeningRuntimeStringsTask::inputDirectories)
+        project.gradle.taskGraph.whenReady {
+            if (hasTask(preflight.get())) {
+                require(!wiringEnabled) { "${preflight.name} must run separately from Hardening for ${variant.name}; original compiled classes are required." }
+                HardeningWiringGate.requireSeparateRuntimePreflight(variant.name,
+                    allTasks.filter { it.project == project }.map { it.path }, project.path)
             }
         }
     }
@@ -257,6 +299,8 @@ internal object AgpHardeningConfigurer {
         val runtime = project.tasks.register("protectHardening${suffix}Runtime", ProtectHardeningRuntimeTask::class.java) {
             group = "hardening"
             namespace.set(variant.namespace)
+            variantName.set(variant.name)
+            resourceSymbols.set(variant.artifacts.get(SingleArtifact.RUNTIME_SYMBOL_LIST))
             policy.set(project.providers.provider { extension.runtimeProtection.policy().encode() })
             minimumSdk.set(variant.minSdk.apiLevel)
             inputManifest.set(variant.artifacts.get(SingleArtifact.MERGED_MANIFEST))
@@ -264,10 +308,12 @@ internal object AgpHardeningConfigurer {
             repositoryRoot.set(project.rootProject.layout.projectDirectory)
             sourceOwnership.set(resolved.map { it.modules.map { module -> "${module.path}:${module.sourceSets.sorted()}" } })
             sourceInputs.from(resolved.map { owned -> owned.modules.flatMap { module ->
-                (module.sourceRoots.javaDirectories + module.sourceRoots.kotlinDirectories + module.sourceRoots.resourceDirectories + module.sourceRoots.assetDirectories).map { root ->
+                (module.sourceRoots.javaDirectories + module.sourceRoots.kotlinDirectories +
+                    (if (module.path == project.path) emptyList() else module.sourceRoots.resourceDirectories) + module.sourceRoots.assetDirectories).map { root ->
                     project.fileTree(root) { include("**/*") }
                 }
             } })
+            sourceInputs.from(project.files(variant.sources.res?.all).asFileTree, variant.artifacts.get(SingleArtifact.MERGED_MANIFEST))
             classpath.from(variant.compileClasspath)
             bootClasspath.from(androidComponents.sdkComponents.bootClasspath)
             lineageSeed.set(tasks.prepare.flatMap { it.preparedDirectory.file("seed.bin") })

@@ -1,10 +1,10 @@
-# Android Hardening Gradle Plugin 1.5.1 详细介绍
+# Android Hardening Gradle Plugin 1.5.2 详细介绍
 
-编写日期：2026-10-16。插件 ID：`com.holin.android.hardening`。
+编写日期：2026-10-16；版本更新：2026-10-23。插件 ID：`com.holin.android.hardening`。
 
-本文介绍本地 1.5.1 实现的功能、接入方式、名称混淆范围、构建产物和验证边界，适合 Android 开发、构建维护和测试人员阅读。
+本文介绍本地 1.5.2 实现的功能、接入方式、名称混淆范围、构建产物和验证边界，适合 Android 开发、构建维护和测试人员阅读。
 
-**版本状态：1.5.1 当前是本地验证版。** 本文与 1.5.0 运行时内容保护、1.5.1 Git 环境修复的分版本源码提交配套。源码提交不等于已经发布 GitHub Release 或远程 Maven 包；使用时须由完整 1.5.1 源码构建本地 Maven 包，或取得对应的已验证交付包，并核对版本及校验和。仓库中的旧版启动器和下载示例仍保持各自固定的版本。
+**版本状态：1.5.2 当前是本地验证版。** 本文包含 1.5.0 运行时内容保护、1.5.1 Git 环境修复和 1.5.2 字符串分级保护、预检及读取适配。源码提交不等于已经发布 GitHub Release 或远程 Maven 包；使用时须由完整 1.5.2 源码构建本地 Maven 包，或取得对应的已验证交付包，并核对版本及校验和。仓库中的旧版启动器和下载示例仍保持各自固定的版本。
 
 ## 1. 插件定位
 
@@ -161,9 +161,9 @@ res/layout/activity_home.xml
 
 当前 v1 实现要求 `existingPlugins` / legacy baseline。即使某个新项目没有既有加固插件，也不能通过虚构一个插件或空 baseline 绕过检查。首次集成需先处理这一前置要求。
 
-### 6.1 获取本地 1.5.1 包
+### 6.1 获取本地 1.5.2 包
 
-由维护者在包含完整 1.5.1 实现的源码工作区执行：
+由维护者在包含完整 1.5.2 实现的源码工作区执行：
 
 ```shell
 ./gradlew packagePortableHardeningPlugin verifyPortableHardeningPlugin
@@ -172,11 +172,11 @@ res/layout/activity_home.xml
 预期交付文件为：
 
 ```text
-build/distributions/hardening-gradle-plugin-1.5.1-portable-maven.zip
-build/distributions/hardening-gradle-plugin-1.5.1-portable-maven.zip.sha256
+build/distributions/hardening-gradle-plugin-1.5.2-portable-maven.zip
+build/distributions/hardening-gradle-plugin-1.5.2-portable-maven.zip.sha256
 ```
 
-消费方核对外层 SHA-256，解压后核对包内 `SHA256SUMS`，再使用其中的 `repository`。已有 `hardeningw` 启动器可能固定到旧版本；1.5.1 本地接入应使用消费项目的 `./gradlew` 和匹配的本地包。
+消费方核对外层 SHA-256，解压后核对包内 `SHA256SUMS`，再使用其中的 `repository`。已有 `hardeningw` 启动器可能固定到旧版本；1.5.2 本地接入应使用消费项目的 `./gradlew` 和匹配的本地包。
 
 ### 6.2 配置插件仓库
 
@@ -209,7 +209,7 @@ pluginManagement {
 
 ```kotlin
 plugins {
-    id("com.holin.android.hardening") version "1.5.1" apply false
+    id("com.holin.android.hardening") version "1.5.2" apply false
 }
 ```
 
@@ -342,7 +342,45 @@ runtimeProtection {
 
 `assetReaders` 使用真实的 JVM 内部类名、方法名和 descriptor，不能直接填写 Kotlin 源码函数签名。图片 `includes` 使用 `drawable/name` 资源身份，与前面的源码文件 glob 含义不同。
 
-1.5.0/1.5.1 增强了内联资源 ID、继承读取器、已打包依赖中的转发调用及选定 assets 的 open/list/descriptor 分析。未知读取器、Native/WebView 访问、系统资源、Manifest/theme/value 引用、NinePatch、动画和不支持的图片消费者仍需排除。是否实际转换以报告为准。
+字符串配置可以分级，四组之间禁止重叠；冲突会列出资源名并失败：
+
+```kotlin
+runtimeProtection {
+    strings.add("existing_contract")
+    minimumStringCoverage.set(1.0)
+    requiredStrings.add("internal_message")
+    candidateStrings.add("optional_status")
+    excludedStrings.put("public_title", "由布局 XML 读取")
+    adaptTextViewResourceSetters.set(false)
+}
+```
+
+- `strings` 保留原始配置数作为分母，继续应用旧覆盖率门槛。
+- `requiredStrings` 必须全部通过读取分析并在最终 AAB 中加密。
+- `candidateStrings` 尝试保护；不兼容项保留原内容，单独统计覆盖率并汇总告警。
+- `excludedStrings` 明确记录排除理由，理由不能为空，始终出现在报告中。
+
+新集合默认空，TextView 适配默认关闭。仅用旧配置时策略编码和配置指纹不变；使用新字段时采用新版策略编码，解码器兼容旧版，新字段参与配置身份及缓存。迁移需要显式调整分组及 mapping lineage，插件不会自动迁移消费项目的清单或生产代码。
+
+独立预检可在普通构建模式调用（将示例变体替换为 `variants` 已选中的实际变体）：
+
+```shell
+./gradlew :app:checkHardeningDemoReleaseRuntimeStrings
+```
+
+预检读取当前变体编译类、资源符号、可用 XML 和合并 Manifest，不生成解密 Bridge，不执行 R8、资源加密、AAB 改写、签名或 mapping 提交。预检与同变体完整 Hardening（包括 `assembleDemoReleaseHardening` / `bundleDemoReleaseHardening`）必须分两次调用。它使用旧组和必保组门槛，候选失败仅报告。通过表示前置检查完成；最终 AAB 仍重新检查所有权、引用、资源是否存在及所有语言/配置值。正式 Hardening 会自动执行相同的读取分析，不要求先手动预检。
+
+资源 ID 可以通过局部 IntArray/int[]、装箱数组、Kotlin 标准列表工厂、Java Arrays.asList/ArrayList、字段和已打包方法传递。分析跟踪分配点和别名，支持常见的读写、add/set/get、迭代、装箱拆箱及 clone/copyOf/arraycopy。只有来源与消费者完整可证明时才允许保护；未知容器操作、反射、Native 或外部逃逸仍排除相关资源，同一资源混合安全与不支持消费者时整体排除。
+
+显式开启 `adaptTextViewResourceSetters` 后，可适配解析到平台 final 方法的 `setText(Int)` 和带 BufferType 重载，包括可证明的 Button/EditText/AppCompat/自定义继承链。受保护值解密后只调用一次对应 CharSequence setter，普通值回到资源 ID 重载（检测需要额外一次资源读取）。保留 BufferType、当前语言配置和错误传播；受保护文本的系统资源来源、自动填充敏感性和内容捕获 text-ID 元数据可能变化，开启即接受此差异。不开启时这些资源 setter 仍是不支持的消费者。不使用隐藏 API、反射字段或全局 Resources 替换。
+
+setter 继承链通过不代表整个资源的读取分析通过。插件同时分析已打包依赖；例如 AndroidX 的动态 `getIdentifier` 路径可能把所选 ID 传给未建模的消费者，此时即使 AppCompat setter 已识别，该资源仍被排除。应根据报告的方法位置修复路径，或按项目策略显式配置为候选／排除项。开启适配不会绕过读取覆盖率门槛。
+
+XML、主题、资源别名仍不支持自动解密；结构化 XML 扫描忽略注释和 tools 属性。富文本、Android 字符串数组/plurals、任何配置中的不支持值仍保留原内容。代码中的资源 ID 容器与 Android 字符串数组资源是不同的支持范围。
+
+报告位于 `build/reports/hardening/<variant>/`：`runtime-strings-preflight.json` 为预检，`runtime-readers.json` 的 `stringAnalysis` 为正式读取分析，`runtime-strings-final.json` 为最终 AAB 字符串资格与加密报告。覆盖率错误抛出前先写报告；所有配置项（包括缺失、非所有权、显式排除项）均保留。按资源身份稳定排序，记录分组、阶段、状态、原因码、建议、类/方法/descriptor/源码行号或指令位置、变体与输入指纹；不输出文案明文或解密密钥。
+
+各组报告配置数、读取闭合数、最终资格数、实际加密数、排除数和原始分母覆盖率。`PENDING_FINAL_RESOURCE_CHECK`/`ELIGIBLE_PENDING_TRANSFORM` 不表示已经加密；只有转换和资源表逆向还原证明完成后才计入 `TRANSFORMED`。独立最终 Bundle 语义验证仍单独执行。完整边界与字段说明见 [runtime-content-protection.md](runtime-content-protection.md)。
 
 ### 7.5 内部组件、依赖与 Native
 
@@ -384,23 +422,23 @@ bundleMetadata {
 
 ## 8. 常用构建命令
 
-以下命令假设 1.5.1 仓库已解压到消费项目的 `.local/hardening-1.5.1/repository`，且所有接入前提已满足。不同命令应分别调用。
+以下命令假设 1.5.2 仓库已解压到消费项目的 `.local/hardening-1.5.2/repository`，且所有接入前提已满足。不同命令应分别调用。
 
 ```shell
 # 普通 AAB，作为独立的关闭组
-./gradlew -PhardeningPluginRepo=.local/hardening-1.5.1/repository \
+./gradlew -PhardeningPluginRepo=.local/hardening-1.5.2/repository \
   -PandroidHardening=false :app:bundleRelease
 
 # Hardened AAB：入口自动在隔离构建中开启 Hardening
-./gradlew -PhardeningPluginRepo=.local/hardening-1.5.1/repository \
+./gradlew -PhardeningPluginRepo=.local/hardening-1.5.2/repository \
   :app:bundleReleaseHardening
 
 # Hardened universal APK
-./gradlew -PhardeningPluginRepo=.local/hardening-1.5.1/repository \
+./gradlew -PhardeningPluginRepo=.local/hardening-1.5.2/repository \
   :app:assembleReleaseHardening
 
 # 兼容旧的显式开关入口
-./gradlew -PhardeningPluginRepo=.local/hardening-1.5.1/repository \
+./gradlew -PhardeningPluginRepo=.local/hardening-1.5.2/repository \
   -PandroidHardening=true :app:hardeningBundleRelease
 ```
 
@@ -422,17 +460,17 @@ bundleMetadata {
 首次比较前，在审阅过的配置和输入上执行：
 
 ```shell
-./gradlew -PhardeningPluginRepo=.local/hardening-1.5.1/repository \
+./gradlew -PhardeningPluginRepo=.local/hardening-1.5.2/repository \
   -PandroidHardening=true :app:captureHardeningBaselineRelease
 
-./gradlew -PhardeningPluginRepo=.local/hardening-1.5.1/repository \
+./gradlew -PhardeningPluginRepo=.local/hardening-1.5.2/repository \
   -PandroidHardening=true :app:compareHardeningRelease
 ```
 
 设备验证入口会安装并启动应用，只在需要执行设备验证时运行：
 
 ```shell
-./gradlew -PhardeningPluginRepo=.local/hardening-1.5.1/repository \
+./gradlew -PhardeningPluginRepo=.local/hardening-1.5.2/repository \
   -PandroidHardening=true :app:hardeningRunRelease
 ```
 
@@ -494,7 +532,7 @@ bundleMetadata {
 
 编译与静态检查只能证明对应构建条件下的编译和约束。单次启动及 30 秒观察不能代替全页面、支付、后端或发布验收。本次没有重新构建业务消费项目，也没有生成新的设备验收结论。
 
-### 10.4 本次分版本提交的验证记录（2026-10-16）
+### 10.4 1.5.0 / 1.5.1 历史验证记录（2026-10-16）
 
 | 验证对象 | 结果与适用范围 |
 | --- | --- |
@@ -505,13 +543,13 @@ bundleMetadata {
 | 1.5.1 Git 环境修复 | 实际调用 macOS Git：无效 `DEVELOPER_DIR` 可复现原问题；通过插件构建器处理未设置、空值、无效目录和有效目录四种情况均成功，有效目录得到保留。 |
 | 临时测试清理后的生产检查 | 环境检查、`classes`、`validatePlugins` 和 `verifyPortableHardeningPlugin` 成功。 |
 
-这些记录对应本次本地执行。它们不代表 GitHub Actions、全部工具链组合、业务设备流程或发布验收已经通过。仓库中的既有功能测试样例仍需在后续维护中统一版本来源。
+这些记录对应 1.5.0 / 1.5.1 当时的本地执行，不代表 1.5.2 的新验证结果，也不代表 GitHub Actions、全部工具链组合、业务设备流程或发布验收已经通过。1.5.2 已同步既有功能测试样例和 CI 产物引用中的版本号。
 
 ## 11. 常见问题
 
 | 现象 | 优先检查 |
 | --- | --- |
-| 找不到 1.5.1 插件 | 本地 ZIP 是否真实为 1.5.1，`hardeningPluginRepo` 是否指向内部 `repository`，settings 是否配置正确。 |
+| 找不到 1.5.2 插件 | 本地 ZIP 是否真实为 1.5.2，`hardeningPluginRepo` 是否指向内部 `repository`，settings 是否配置正确。 |
 | 提示 Hardening disabled | 使用便捷 Hardening 入口，或为旧入口显式传入 `-PandroidHardening=true`。 |
 | 只有普通 APK/AAB | 核对执行任务及 `build/outputs/hardening`，不要取普通输出或流水线中间包。 |
 | baseline 缺失或兼容性检查失败 | 核对真实旧插件声明、实际应用版本、配置输入和 baseline；比较 baseline 与旧插件 baseline 是不同概念。 |
@@ -534,10 +572,11 @@ bundleMetadata {
 | 1.4.2 | 简化 DSL，将固定策略归插件管理，增加语义别名并保留兼容入口。 |
 | 1.5.0 本地版 | 加强字符串/asset 读取分析，新增默认关闭的运行时图片保护，处理 Binder 接口身份的 R8 兼容性。 |
 | 1.5.1 本地版 | 修复 macOS Git 子进程继承无效 `DEVELOPER_DIR` 的问题，保留真实 Git 错误的失败行为。 |
+| 1.5.2 本地版 | 新增字符串分级保护、完整诊断、独立预检、资源 ID 容器传播和默认关闭的 TextView 资源 setter 适配。 |
 
 ## 13. 实现索引与当前边界
 
-以下为 1.5.1 源码中的定位信息，路径相对于 `src/main/kotlin/com/holin/android/hardening/`。查阅其他版本时应同时切换到相应源码提交。
+以下为 1.5.2 源码中的定位信息，路径相对于 `src/main/kotlin/com/holin/android/hardening/`。查阅其他版本时应同时切换到相应源码提交。
 
 | 主题 | 主要文件 |
 | --- | --- |
@@ -553,6 +592,6 @@ bundleMetadata {
 | 运行时保护与图片 | `runtime/RuntimeProtection.kt`、`runtime/RuntimeArtifactProtection.kt`、`runtime/RuntimeImageResources.kt` |
 | Native 格式转换 | `nativecode/NativeFormatProtection.kt` |
 
-当前没有可确认的独立 SourceFile 伪装链路，也没有源码 AST 全量重写、任意文件名统一混淆、所有资源类型全覆盖、Native 符号全面改名或任意读取器自动适配。1.5.0/1.5.1 也没有增加布局/style 结构重排或新的全量 Manifest 重定位方案。接入与评估应以具体转换记录和最终产物为依据。
+当前没有可确认的独立 SourceFile 伪装链路，也没有源码 AST 全量重写、任意文件名统一混淆、所有资源类型全覆盖、Native 符号全面改名或任意读取器自动适配。1.5.0/1.5.1/1.5.2 也没有增加布局/style 结构重排或新的全量 Manifest 重定位方案。接入与评估应以具体转换记录和最终产物为依据。
 
 仓库通用说明见 [README](../README.md)，历史变更见 [CHANGELOG](../CHANGELOG.md)。两者在不同源码分支上可能对应不同版本，阅读时应与本文开头的版本状态一起核对。

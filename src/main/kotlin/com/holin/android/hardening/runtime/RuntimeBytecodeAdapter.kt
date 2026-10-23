@@ -20,16 +20,33 @@ data class RuntimeAdaptation(
     val report: Map<String, Any>,
 )
 
+data class RuntimeReaderCall(val owner: String, val method: String, val descriptor: String, val instruction: Int,
+    val platform: String, val kind: String)
+
+data class RuntimeBytecodeAnalysis(val stringNames: Set<String>, val assetsClosed: Boolean, val report: Map<String, Any>,
+    val stringReport: Map<String, Any>, val calls: List<RuntimeReaderCall>, val policy: RuntimeProtectionPolicy) {
+    fun requireStrings(reportPath: String = "") = RuntimeStringDiagnostics.requireCoverage(policy, stringNames, stringReport, reportPath)
+    fun requireAssets() { require(assetsClosed || policy.minimumAssetCoverage == 0.0) { "asset reader closure failed: ${report["assetReasons"]}" } }
+}
+
 object RuntimeBytecodeAdapter {
-    fun adapt(
+    fun adapt(classes: Map<String, ByteArray>, hierarchy: Map<String, ByteArray>, ownedRoots: Set<String>, namespace: String,
+        resourceXml: Map<String, String>, policy: RuntimeProtectionPolicy, helper: String): RuntimeAdaptation {
+        val analysis = analyze(classes, hierarchy, ownedRoots, namespace, resourceXml, policy)
+        analysis.requireStrings()
+        analysis.requireAssets()
+        return apply(classes, analysis, helper)
+    }
+
+    fun analyze(
         classes: Map<String, ByteArray>,
         hierarchy: Map<String, ByteArray>,
         ownedRoots: Set<String>,
         namespace: String,
         resourceXml: Map<String, String>,
         policy: RuntimeProtectionPolicy,
-        helper: String,
-    ): RuntimeAdaptation {
+    ): RuntimeBytecodeAnalysis {
+        val selected = policy.selectedStrings
         val nodes = classes.mapValues { (_, bytes) -> ClassNode().also { ClassReader(bytes).accept(it, 0) } }
         val parents = (hierarchy + classes).mapValues { (_, bytes) -> ClassReader(bytes).superName }
         fun base(owner: String): String? {
@@ -45,22 +62,46 @@ object RuntimeBytecodeAdapter {
         val rOwner = namespace.replace('.', '/') + "/R\$string"
         // AGP's scoped classes carry the current variant's R symbols, including when
         // javac/kotlinc has already inlined their final values in consumer classes.
-        val symbolNode = nodes[rOwner] ?: hierarchy[rOwner]?.let { bytes ->
+        val symbolNode = hierarchy[rOwner]?.let { bytes ->
             ClassNode().also { ClassReader(bytes).accept(it, ClassReader.SKIP_CODE) }
-        }
-        val namesById = symbolNode?.fields.orEmpty().filter { it.name in policy.strings && it.desc == "I" && it.value is Int }
+        } ?: nodes[rOwner]
+        val namesById = symbolNode?.fields.orEmpty().filter { it.name in selected && it.desc == "I" && it.value is Int }
             .groupBy { it.value as Int }.mapValues { (_, values) -> values.mapTo(linkedSetOf()) { it.name } }
         val unsafe = mutableMapOf<String, MutableSet<String>>()
         val candidates = mutableMapOf<MethodInsnNode, Pair<MutableSet<String>, String>>()
         val usedFields = linkedSetOf<FieldInsnNode>()
         val readers = linkedSetOf<MethodInsnNode>()
         val generalStrings = linkedMapOf<MethodInsnNode, String>()
+        val textSetters = linkedMapOf<MethodInsnNode, String>()
+        val sites = linkedMapOf<AbstractInsnNode, RuntimeReaderCall>()
+        val locations = linkedMapOf<AbstractInsnNode, Map<String, Any>>()
+        nodes.forEach { (owner, node) -> node.methods.forEach { method ->
+            var line = -1
+            method.instructions.forEachIndexed { index, instruction ->
+                if (instruction is org.objectweb.asm.tree.LineNumberNode) line = instruction.line
+                sites[instruction] = RuntimeReaderCall(owner, method.name, method.desc, index, "", "")
+                locations[instruction] = mapOf("class" to owner, "method" to method.name, "descriptor" to method.desc,
+                    "instruction" to index) + (if (line < 0) emptyMap() else mapOf("line" to line)) +
+                    (node.sourceFile?.let { mapOf("sourceFile" to it) } ?: emptyMap())
+            }
+        } }
+        val issues = linkedMapOf<String, MutableSet<RuntimeStringIssue>>()
+        val stringReaders = linkedMapOf<String, MutableSet<Map<String, Any>>>()
+        var currentInstruction: AbstractInsnNode? = null
         val dynamicNames = mutableMapOf<AbstractInsnNode, Set<String>>()
         val dynamicReturns = mutableMapOf<String, Set<String>>()
         val dynamicFields = mutableMapOf<String, Set<String>>()
         val dynamicArguments = mutableMapOf<String, MutableMap<Int, Set<String>>>()
         val returnParameters = mutableMapOf<String, Set<Int>>()
+        val containerElements = linkedMapOf<AbstractInsnNode, Set<String>>()
+        val containerAliases = linkedMapOf<AbstractInsnNode, Set<AbstractInsnNode>>()
+        val containerFields = linkedMapOf<String, Set<AbstractInsnNode>>()
+        val containerReturns = linkedMapOf<String, Set<AbstractInsnNode>>()
+        val containerArguments = linkedMapOf<String, MutableMap<Int, Set<AbstractInsnNode>>>()
+        val parameterMarkers = linkedMapOf<String, org.objectweb.asm.tree.LabelNode>()
+        val relevantMethods = linkedSetOf<String>()
         val parameterDependencies = mutableMapOf<AbstractInsnNode, Set<Int>>()
+        val programFields = nodes.flatMap { (owner, node) -> node.fields.map { "$owner#${it.name}:${it.desc}" } }.toSet()
         val programMethods = nodes.flatMap { (owner, node) -> node.methods.map { "$owner#${it.name}${it.desc}" to it } }.toMap()
         val implementations = programMethods.keys.groupBy { it.substringAfter('#') }
         val dispatchCache = mutableMapOf<String, List<String>>()
@@ -77,27 +118,51 @@ object RuntimeBytecodeAdapter {
                     .firstOrNull { it in programMethods }
                 val possible = if (call.opcode in setOf(Opcodes.INVOKESTATIC, Opcodes.INVOKESPECIAL)) listOfNotNull(declaring)
                     else listOfNotNull(declaring) + implementations[signature].orEmpty().filter { subtype(it.substringBefore('#'), call.owner) }
-                possible.distinct().filter { programMethods.getValue(it).access and (Opcodes.ACC_NATIVE or Opcodes.ACC_ABSTRACT) == 0 }
+                possible.distinct().filter { programMethods.getValue(it).access and Opcodes.ACC_ABSTRACT == 0 }
             }
+        }
+        fun isContainerAllocation(instruction: AbstractInsnNode): Boolean = instruction.opcode == Opcodes.ANEWARRAY ||
+            (instruction is org.objectweb.asm.tree.IntInsnNode && instruction.opcode == Opcodes.NEWARRAY && instruction.operand == Opcodes.T_INT) ||
+            (instruction is org.objectweb.asm.tree.TypeInsnNode && instruction.opcode == Opcodes.NEW && instruction.desc == "java/util/ArrayList")
+        // Empty factories and field initializers must establish identities before a caller
+        // inserts a selected ID. Waiting for a tainted argument would miss these origins.
+        if (selected.isNotEmpty()) nodes.forEach { (owner, node) -> node.methods.forEach { method ->
+            if (method.instructions.any(::isContainerAllocation)) relevantMethods += "$owner#${method.name}${method.desc}"
+        } }
+        fun containers(value: SourceValue): Set<AbstractInsnNode> = value.insns.flatMapTo(linkedSetOf()) { instruction ->
+            containerAliases[instruction].orEmpty() + when (instruction) {
+                is FieldInsnNode -> containerFields["${instruction.owner}#${instruction.name}:${instruction.desc}"].orEmpty()
+                is MethodInsnNode -> targets(instruction).flatMap { containerReturns[it].orEmpty() }
+                else -> emptySet()
+            } + if (instruction in containerElements || isContainerAllocation(instruction)) setOf(instruction) else emptySet()
         }
         fun summarySize() = dynamicReturns.values.sumOf { it.size } + dynamicFields.values.sumOf { it.size } +
-            dynamicArguments.values.sumOf { slots -> slots.values.sumOf { it.size } } + returnParameters.values.sumOf { it.size }
+            dynamicArguments.values.sumOf { slots -> slots.values.sumOf { it.size } } + returnParameters.values.sumOf { it.size } +
+            containerElements.size + containerElements.values.sumOf { it.size } + containerFields.values.sumOf { it.size } +
+            containerReturns.values.sumOf { it.size } + containerArguments.values.sumOf { slots -> slots.values.sumOf { it.size } } + relevantMethods.size +
+            dynamicNames.values.sumOf { it.size } + containerAliases.values.sumOf { it.size }
         val readerMethods = linkedSetOf<String>()
         val assetReasons = linkedSetOf<String>()
-        var currentReader = "resource-xml"
-        fun deny(names: Set<String>, reason: String) { names.forEach { unsafe.getOrPut(it) { linkedSetOf() }.add("$reason:$currentReader") } }
-        policy.strings.forEach { name ->
-            if (resourceXml.values.any { Regex("@(?:[A-Za-z0-9_.]+:)?string/" + Regex.escape(name) + "\\b").containsMatchIn(it) }) {
-                deny(setOf(name), "XML_OR_RESOURCE_ALIAS_REFERENCE")
+        fun deny(names: Set<String>, reason: String) {
+            val location = currentInstruction?.let { locations[it] }.orEmpty()
+            val issue = RuntimeStringIssue(reason.substringBefore(':'), location, reason.substringAfter(':', ""))
+            names.forEach { name ->
+                unsafe.getOrPut(name) { linkedSetOf() }.add(reason)
+                issues.getOrPut(name) { linkedSetOf() }.add(issue)
             }
         }
+        val xmlIssues = RuntimeStringXmlReferences.scan(resourceXml, selected)
+        fun restoreXmlIssues() = xmlIssues.forEach { (name, references) ->
+            issues.getOrPut(name) { linkedSetOf() }.addAll(references)
+            unsafe.getOrPut(name) { linkedSetOf() }.addAll(references.map { it.code })
+        }
         fun fields(value: SourceValue): Set<FieldInsnNode> = value.insns.filterIsInstance<FieldInsnNode>()
-            .filter { it.opcode == Opcodes.GETSTATIC && it.owner.endsWith("/R\$string") && it.name in policy.strings }.toSet()
+            .filter { it.opcode == Opcodes.GETSTATIC && it.owner.endsWith("/R\$string") && it.name in selected }.toSet()
         fun literalNames(values: List<SourceValue>): Set<String> = values.flatMap { value ->
             fields(value).map { it.name } + value.insns.filterIsInstance<org.objectweb.asm.tree.LdcInsnNode>()
                 .flatMap { namesById[it.cst].orEmpty() }
         }.toSet()
-        fun dynamic(values: List<SourceValue>): Set<String> = values.flatMap { value -> value.insns.flatMap { instruction ->
+        fun dynamic(values: List<SourceValue>): Set<String> = values.flatMap { value -> containers(value).flatMap { containerElements[it].orEmpty() } + value.insns.flatMap { instruction ->
             dynamicNames[instruction].orEmpty() + when (instruction) {
                 is MethodInsnNode -> if (instruction.name == "getIdentifier" && instruction.desc == "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)I" &&
                     base(instruction.owner) == "android/content/res/Resources") emptySet()
@@ -107,15 +172,89 @@ object RuntimeBytecodeAdapter {
             }
         } }.toSet()
         fun names(values: List<SourceValue>): Set<String> = literalNames(values) + dynamic(values)
+        fun markFields(values: List<SourceValue>) { usedFields.addAll(values.flatMap(::fields)) }
+        fun storeElements(roots: Set<AbstractInsnNode>, values: Set<String>) {
+            if (roots.isEmpty()) deny(values, "UNRESOLVED_RESOURCE_ID_CONTAINER")
+            roots.forEach { containerElements[it] = containerElements[it].orEmpty() + values }
+        }
+        fun modelContainer(call: MethodInsnNode, values: List<SourceValue>): Boolean {
+            val signature = "${call.name}${call.desc}"
+            val receiver = values.firstOrNull()?.let(::containers).orEmpty()
+            fun fresh(contents: Set<String>) { storeElements(setOf(call), contents); containerAliases[call] = setOf(call) }
+            fun alias(roots: Set<AbstractInsnNode>) { containerAliases[call] = containerAliases[call].orEmpty() + roots }
+            if ((call.owner == "java/lang/Integer" && signature in setOf("valueOf(I)Ljava/lang/Integer;", "intValue()I")) ||
+                (call.owner == "java/lang/Number" && signature == "intValue()I" && targets(call).isEmpty())) {
+                dynamicNames[call] = dynamicNames[call].orEmpty() + names(values)
+                markFields(values)
+                return true
+            }
+            val kotlinLists = call.owner == "kotlin/collections/CollectionsKt" || call.owner.startsWith("kotlin/collections/CollectionsKt__")
+            if ((call.owner == "java/util/Arrays" && signature == "asList([Ljava/lang/Object;)Ljava/util/List;") ||
+                (kotlinLists && signature in setOf("listOf([Ljava/lang/Object;)Ljava/util/List;", "mutableListOf([Ljava/lang/Object;)Ljava/util/List;",
+                    "arrayListOf([Ljava/lang/Object;)Ljava/util/ArrayList;", "listOf(Ljava/lang/Object;)Ljava/util/List;")) ||
+                (call.owner == "java/util/Collections" && signature == "singletonList(Ljava/lang/Object;)Ljava/util/List;")) {
+                if ((call.owner == "java/util/Arrays" || (kotlinLists && signature == "listOf([Ljava/lang/Object;)Ljava/util/List;")) && receiver.isNotEmpty()) alias(receiver) else fresh(names(values))
+                markFields(values)
+                return true
+            }
+            if (call.name == "clone" && call.desc == "()Ljava/lang/Object;" && (call.owner == "java/lang/Object" || call.owner.startsWith("[")) && receiver.isNotEmpty()) {
+                fresh(names(values)); return true
+            }
+            if (call.owner == "java/util/Arrays" && signature in setOf("copyOf([II)[I", "copyOf([Ljava/lang/Object;I)[Ljava/lang/Object;")) {
+                deny(names(values.drop(1)), "RESOURCE_ID_USED_AS_CONTAINER_SIZE")
+                fresh(names(values.take(1))); return true
+            }
+            if (call.owner == "java/lang/System" && signature == "arraycopy(Ljava/lang/Object;ILjava/lang/Object;II)V") {
+                deny(names(listOf(values[1], values[3], values[4])), "RESOURCE_ID_USED_AS_CONTAINER_INDEX")
+                storeElements(containers(values[2]), names(values.take(1))); return true
+            }
+            if (call.owner == "java/util/ArrayList" && call.name == "<init>" && call.desc in setOf("()V", "(I)V", "(Ljava/util/Collection;)V")) {
+                if (call.desc == "(I)V") deny(names(values.drop(1)), "RESOURCE_ID_USED_AS_CONTAINER_SIZE")
+                else storeElements(receiver, names(values.drop(1)))
+                markFields(values); return true
+            }
+            if (call.owner in setOf("java/util/List", "java/util/ArrayList", "java/util/Collection", "java/lang/Iterable") && receiver.isNotEmpty()) {
+                when (signature) {
+                    "get(I)Ljava/lang/Object;" -> {
+                        deny(names(values.drop(1)), "RESOURCE_ID_USED_AS_CONTAINER_INDEX")
+                        dynamicNames[call] = dynamicNames[call].orEmpty() + names(values.take(1))
+                    }
+                    "add(Ljava/lang/Object;)Z", "add(ILjava/lang/Object;)V", "set(ILjava/lang/Object;)Ljava/lang/Object;" -> {
+                        if (values.size == 3) deny(names(listOf(values[1])), "RESOURCE_ID_USED_AS_CONTAINER_INDEX")
+                        if (call.name == "set") dynamicNames[call] = dynamicNames[call].orEmpty() + names(values.take(1))
+                        storeElements(receiver, names(listOf(values.last())))
+                    }
+                    "iterator()Ljava/util/Iterator;" -> alias(receiver)
+                    "size()I", "isEmpty()Z" -> Unit
+                    else -> return false
+                }
+                markFields(values); return true
+            }
+            if (call.owner == "java/util/Iterator" && receiver.isNotEmpty()) {
+                when (signature) {
+                    "next()Ljava/lang/Object;" -> dynamicNames[call] = dynamicNames[call].orEmpty() + names(values)
+                    "hasNext()Z" -> Unit
+                    else -> return false
+                }
+                return true
+            }
+            return false
+        }
         var previousSummarySize: Int
         var readersScanned = false
         do {
         previousSummarySize = summarySize()
-        val dynamicSignatures = (dynamicReturns.keys + returnParameters.keys).mapTo(hashSetOf()) { it.substringAfter('#') }
+        unsafe.clear()
+        issues.clear()
+        candidates.clear()
+        usedFields.clear()
+        stringReaders.clear()
+        restoreXmlIssues()
+        val dynamicSignatures = (dynamicReturns.keys + returnParameters.keys + containerReturns.keys + relevantMethods).mapTo(hashSetOf()) { it.substringAfter('#') }
         nodes.forEach { (owner, node) ->
             node.methods.forEach methodLoop@{ method ->
                 val identity = "$owner#${method.name}${method.desc}"
-                currentReader = identity
+                currentInstruction = null
                 if (!readersScanned) method.instructions.filterIsInstance<MethodInsnNode>().forEach { call ->
                     val platform = base(call.owner)
                     if (call.opcode == Opcodes.INVOKEVIRTUAL && platform != null &&
@@ -125,6 +264,15 @@ object RuntimeBytecodeAdapter {
                         (platform == "android/content/res/Resources" && call.name == "getValue" && call.desc in setOf("(ILandroid/util/TypedValue;Z)V", "(Ljava/lang/String;Landroid/util/TypedValue;Z)V")) ||
                         (platform == "android/content/res/Resources" && call.name == "getValueForDensity" && call.desc == "(IILandroid/util/TypedValue;Z)V"))) {
                         generalStrings[call] = platform
+                    }
+                    if (policy.adaptTextViewResourceSetters && call.opcode in setOf(Opcodes.INVOKEVIRTUAL, Opcodes.INVOKESPECIAL) &&
+                        call.name == "setText" && call.desc in setOf("(I)V", "(ILandroid/widget/TextView\$BufferType;)V") &&
+                        subtype(call.owner, "android/widget/TextView")) {
+                        val platformClass = hierarchy["android/widget/TextView"] ?: classes["android/widget/TextView"]
+                        val platformNode = platformClass?.let { bytes -> ClassNode().also { ClassReader(bytes).accept(it, ClassReader.SKIP_CODE) } }
+                        if (platformNode?.methods?.any { it.name == call.name && it.desc == call.desc && it.access and Opcodes.ACC_FINAL != 0 } == true) {
+                            textSetters[call] = "android/widget/TextView"
+                        }
                     }
                     if (call.owner == "android/content/res/AssetManager") {
                         if (call.opcode == Opcodes.INVOKEVIRTUAL && (
@@ -138,87 +286,103 @@ object RuntimeBytecodeAdapter {
                         }
                     }
                 }
-                if (method.instructions.size() == 0 || policy.strings.isEmpty()) return@methodLoop
-                val needsAnalysis = dynamicArguments[identity]?.isNotEmpty() == true || method.instructions.any { instruction ->
+                if (method.instructions.size() == 0 || selected.isEmpty()) return@methodLoop
+                val needsAnalysis = identity in relevantMethods || dynamicArguments[identity]?.isNotEmpty() == true || containerArguments[identity]?.isNotEmpty() == true || method.instructions.any { instruction ->
                     when (instruction) {
                         is org.objectweb.asm.tree.LdcInsnNode -> instruction.cst in namesById
-                        is FieldInsnNode -> (instruction.owner.endsWith("/R\$string") && instruction.name in policy.strings) ||
-                            "${instruction.owner}#${instruction.name}:${instruction.desc}" in dynamicFields
+                        is FieldInsnNode -> (instruction.owner.endsWith("/R\$string") && instruction.name in selected) ||
+                            ("${instruction.owner}#${instruction.name}:${instruction.desc}" in dynamicFields ||
+                                "${instruction.owner}#${instruction.name}:${instruction.desc}" in containerFields)
                         is MethodInsnNode -> instruction.name == "getIdentifier" ||
                             "${instruction.name}${instruction.desc}" in dynamicSignatures
                         else -> false
                     }
                 }
                 if (!needsAnalysis) return@methodLoop
+                relevantMethods += identity
                 val interpreter = object : SourceInterpreter(Opcodes.ASM9) {
                     override fun newParameterValue(isInstanceMethod: Boolean, local: Int, type: org.objectweb.asm.Type): SourceValue {
                         val selected = dynamicArguments[identity]?.get(local).orEmpty()
-                        if (selected.isEmpty()) return super.newParameterValue(isInstanceMethod, local, type)
-                        val marker = org.objectweb.asm.tree.LabelNode()
+                        val roots = containerArguments[identity]?.get(local).orEmpty()
+                        if (selected.isEmpty() && roots.isEmpty()) return super.newParameterValue(isInstanceMethod, local, type)
+                        val marker = parameterMarkers.getOrPut("$identity:$local") { org.objectweb.asm.tree.LabelNode() }
                         dynamicNames[marker] = selected
+                        containerAliases[marker] = roots
                         parameterDependencies[marker] = setOf(local)
                         return SourceValue(type.size, marker)
                     }
                     override fun copyOperation(insn: AbstractInsnNode, value: SourceValue): SourceValue = value
                     override fun unaryOperation(insn: AbstractInsnNode, value: SourceValue): SourceValue? {
+                        currentInstruction = insn
                         if (insn.opcode !in setOf(Opcodes.IFNULL, Opcodes.IFNONNULL, Opcodes.IFEQ, Opcodes.IFNE, Opcodes.IFLT, Opcodes.IFGE, Opcodes.IFGT, Opcodes.IFLE,
                                 Opcodes.TABLESWITCH, Opcodes.LOOKUPSWITCH)) {
-                            val constant = literalNames(listOf(value))
-                            deny(constant, "RESOURCE_ID_ESCAPES_CLOSED_GETSTRING")
-                            val lookup = dynamic(listOf(value))
+                            val lookup = names(listOf(value))
                             when {
-                                insn.opcode in setOf(Opcodes.IRETURN, Opcodes.ARETURN, Opcodes.ARRAYLENGTH) -> Unit
+                                insn.opcode in setOf(Opcodes.IRETURN, Opcodes.ARETURN, Opcodes.ARRAYLENGTH) -> markFields(listOf(value))
                                 insn.opcode == Opcodes.CHECKCAST -> {
                                     dynamicNames[insn] = lookup
+                                    containerAliases[insn] = containers(value)
                                     parameterDependencies[insn] = value.insns.flatMapTo(linkedSetOf()) { parameterDependencies[it].orEmpty() }
+                                    markFields(listOf(value))
                                 }
                                 insn.opcode == Opcodes.PUTSTATIC && insn is FieldInsnNode -> {
                                     val field = "${insn.owner}#${insn.name}:${insn.desc}"
+                                    if (field !in programFields) deny(lookup, "EXTERNAL_RESOURCE_ID_FIELD")
                                     if (lookup.isNotEmpty()) dynamicFields[field] = dynamicFields[field].orEmpty() + lookup
+                                    val roots = containers(value)
+                                    if (roots.isNotEmpty()) containerFields[field] = containerFields[field].orEmpty() + roots
+                                    markFields(listOf(value))
                                 }
-                                else -> deny(lookup, "DYNAMIC_RESOURCE_ID_ESCAPES")
+                                else -> deny(lookup, "RESOURCE_ID_ESCAPES_CLOSED_GETSTRING")
                             }
                         }
                         return super.unaryOperation(insn, value)
                     }
                     override fun binaryOperation(insn: AbstractInsnNode, first: SourceValue, second: SourceValue): SourceValue? {
+                        currentInstruction = insn
                         if (insn.opcode !in Opcodes.IF_ICMPEQ..Opcodes.IF_ICMPLE) {
-                            deny(literalNames(listOf(first, second)), "RESOURCE_ID_ESCAPES_CLOSED_GETSTRING")
-                            val lookup = dynamic(listOf(first, second))
-                            if (insn.opcode == Opcodes.IALOAD) {
-                                dynamicNames[insn] = dynamic(listOf(first))
+                            val lookup = names(listOf(first, second))
+                            if (insn.opcode in setOf(Opcodes.IALOAD, Opcodes.AALOAD)) {
+                                deny(names(listOf(second)), "RESOURCE_ID_USED_AS_CONTAINER_INDEX")
+                                dynamicNames[insn] = names(listOf(first))
                                 parameterDependencies[insn] = first.insns.flatMapTo(linkedSetOf()) { parameterDependencies[it].orEmpty() }
                             } else if (insn.opcode == Opcodes.PUTFIELD && insn is FieldInsnNode) {
                                 val field = "${insn.owner}#${insn.name}:${insn.desc}"
-                                if (lookup.isNotEmpty()) dynamicFields[field] = dynamicFields[field].orEmpty() + lookup
-                            } else deny(lookup, "DYNAMIC_RESOURCE_ID_ESCAPES")
+                                if (field !in programFields) deny(lookup, "EXTERNAL_RESOURCE_ID_FIELD")
+                                    if (lookup.isNotEmpty()) dynamicFields[field] = dynamicFields[field].orEmpty() + lookup
+                                val roots = containers(second)
+                                if (roots.isNotEmpty()) containerFields[field] = containerFields[field].orEmpty() + roots
+                                markFields(listOf(second))
+                            } else deny(lookup, "RESOURCE_ID_ESCAPES_CLOSED_GETSTRING")
                         }
                         return super.binaryOperation(insn, first, second)
                     }
                     override fun ternaryOperation(insn: AbstractInsnNode, a: SourceValue, b: SourceValue, c: SourceValue): SourceValue? {
-                        if (insn.opcode == Opcodes.IASTORE) {
-                            val lookup = names(listOf(c))
-                            val arrays = a.insns.filterIsInstance<FieldInsnNode>()
-                            arrays.forEach { field ->
-                                val arrayIdentity = "${field.owner}#${field.name}:${field.desc}"
-                                if (lookup.isNotEmpty()) dynamicFields[arrayIdentity] = dynamicFields[arrayIdentity].orEmpty() + lookup
-                            }
-                            if (arrays.isEmpty()) deny(lookup, "UNRESOLVED_RESOURCE_ID_ARRAY")
+                        currentInstruction = insn
+                        if (insn.opcode in setOf(Opcodes.IASTORE, Opcodes.AASTORE)) {
+                            deny(names(listOf(b)), "RESOURCE_ID_USED_AS_CONTAINER_INDEX")
+                            storeElements(containers(a), names(listOf(c)))
+                            markFields(listOf(c))
                         } else deny(names(listOf(a, b, c)), "RESOURCE_ID_ESCAPES_CLOSED_GETSTRING")
                         return super.ternaryOperation(insn, a, b, c)
                     }
                     override fun returnOperation(insn: AbstractInsnNode, value: SourceValue, expected: SourceValue) {
-                        deny(literalNames(listOf(value)), "RESOURCE_ID_ESCAPES_CLOSED_GETSTRING")
+                        currentInstruction = insn
+                        markFields(listOf(value))
+                        val roots = containers(value)
+                        if (roots.isNotEmpty()) containerReturns[identity] = containerReturns[identity].orEmpty() + roots
                         val parameters = value.insns.flatMapTo(linkedSetOf()) { parameterDependencies[it].orEmpty() }
                         if (parameters.isNotEmpty()) returnParameters[identity] = returnParameters[identity].orEmpty() + parameters
-                        val independent = dynamic(value.insns.filter { parameterDependencies[it].isNullOrEmpty() }.map { SourceValue(value.size, it) })
+                        val independent = names(value.insns.filter { parameterDependencies[it].isNullOrEmpty() }.map { SourceValue(value.size, it) })
                         if (independent.isNotEmpty()) {
                             dynamicReturns[identity] = dynamicReturns[identity].orEmpty() + independent
                         }
                         super.returnOperation(insn, value, expected)
                     }
                     override fun naryOperation(insn: AbstractInsnNode, values: MutableList<out SourceValue>): SourceValue? {
+                        currentInstruction = insn
                         val invocation = insn as? MethodInsnNode
+                        if (invocation != null && modelContainer(invocation, values)) return super.naryOperation(insn, values)
                         invocation?.let { call ->
                             val targetSlots = targets(call).flatMapTo(linkedSetOf()) { returnParameters[it].orEmpty() }
                             var slot = 0
@@ -229,6 +393,7 @@ object RuntimeBytecodeAdapter {
                             }
                             if (returned.isNotEmpty()) {
                                 dynamicNames[call] = names(returned)
+                                containerAliases[call] = returned.flatMapTo(linkedSetOf(), ::containers)
                                 parameterDependencies[call] = returned.flatMapTo(linkedSetOf()) { value -> value.insns.flatMap { parameterDependencies[it].orEmpty() } }
                             }
                         }
@@ -240,38 +405,35 @@ object RuntimeBytecodeAdapter {
                             val type = constant(2)
                             val selected = when {
                                 type != null && type != "string" && type.isNotEmpty() -> emptySet()
-                                name != null -> policy.strings.filterTo(linkedSetOf()) { it == name.substringAfterLast('/').substringAfterLast(':') }
-                                else -> policy.strings
+                                name != null -> selected.filterTo(linkedSetOf()) { it == name.substringAfterLast('/').substringAfterLast(':') }
+                                else -> selected
                             }
                             dynamicNames[insn] = dynamicNames[insn].orEmpty() + selected
                         }
                         val referenced = names(values)
-                        if (referenced.isNotEmpty()) {
+                        if (referenced.isNotEmpty() || values.any { containers(it).isNotEmpty() }) {
                             val call = insn as? MethodInsnNode
                             val idValue = values.getOrNull(1)
                             val idSources = idValue?.let(::fields).orEmpty()
                             val idNames = idValue?.let { names(listOf(it)) }.orEmpty()
-                            val platform = call?.let { base(it.owner) }
-                            if (call != null && call in generalStrings && platform != null &&
+                            val platform = call?.let { textSetters[it] ?: base(it.owner) }
+                            if (call != null && (call in generalStrings || call in textSetters) && platform != null &&
                                 idNames.isNotEmpty() && idSources.all { it.owner == rOwner } &&
                                 values.filterIndexed { index, _ -> index != 1 }.all { names(listOf(it)).isEmpty() }) {
                                 usedFields += idSources
-                                idNames.forEach { selected -> candidates.getOrPut(call) { linkedSetOf<String>() to platform }.first.add(selected) }
+                                idNames.forEach { name ->
+                                    candidates.getOrPut(call) { linkedSetOf<String>() to platform }.first.add(name)
+                                    stringReaders.getOrPut(name) { linkedSetOf() }.add(locations.getValue(call) +
+                                        mapOf("consumer" to "${call.owner}#${call.name}${call.desc}", "adapter" to if (call in textSetters) "TEXT_VIEW_RESOURCE_SETTER" else "PLATFORM_GETTER"))
+                                }
                             } else {
                                 val destinations = call?.let(::targets).orEmpty()
-                                val transferable = destinations.isNotEmpty()
-                                val passThrough = call != null && (
-                                    (call.owner == "java/util/Arrays" && call.name == "copyOf" && call.desc == "([II)[I") ||
-                                    (call.owner == "java/lang/Object" && call.name == "clone" && call.desc == "()Ljava/lang/Object;"))
-                                if (passThrough) {
-                                    dynamicNames[insn] = names(values)
-                                    parameterDependencies[insn] = values.flatMapTo(linkedSetOf()) { value -> value.insns.flatMap { parameterDependencies[it].orEmpty() } }
-                                }
+                                val transferable = destinations.isNotEmpty() && destinations.all { programMethods.getValue(it).access and Opcodes.ACC_NATIVE == 0 }
                                 val typedDrawableReader = call != null && call.owner in setOf("androidx/core/content/ContextCompat",
                                     "androidx/core/content/res/ResourcesCompat", "androidx/appcompat/content/res/AppCompatResources",
                                     "com/bumptech/glide/load/resource/drawable/DrawableDecoderCompat") && call.name == "getDrawable" &&
                                     call.desc.endsWith(")Landroid/graphics/drawable/Drawable;")
-                                val idOnly = literalNames(values).isEmpty() && call != null && (typedDrawableReader ||
+                                val idOnly = values.filter { names(listOf(it)).isNotEmpty() }.all { containers(it).isEmpty() } && literalNames(values).isEmpty() && call != null && (typedDrawableReader ||
                                     (platform == "android/content/Context" && call.name in setOf("getDrawable", "getColor", "getColorStateList")) ||
                                     (platform == "android/content/res/Resources" && call.name in setOf("getXml", "getDrawable", "getDrawableForDensity", "getColor", "getColorStateList",
                                         "getBoolean", "getInteger", "getDimension", "getDimensionPixelSize", "getDimensionPixelOffset", "getResourceName", "getResourceEntryName",
@@ -291,7 +453,7 @@ object RuntimeBytecodeAdapter {
                                     (call.owner == "android/widget/RemoteViews" && call.name == "setImageViewResource") ||
                                     (call.owner == "android/app/Notification\$Builder" && call.name in setOf("addAction", "setSmallIcon")) ||
                                     (call.owner == "android/app/Notification\$Action\$Builder" && call.name == "<init>"))
-                                if (transferable && !idOnly && !passThrough) {
+                                if (transferable && !idOnly) {
                                     destinations.forEach { target ->
                                         var local = 0
                                         values.forEach { value ->
@@ -300,12 +462,17 @@ object RuntimeBytecodeAdapter {
                                                 val slots = dynamicArguments.getOrPut(target) { mutableMapOf() }
                                                 slots[local] = slots[local].orEmpty() + selected
                                             }
+                                            val roots = containers(value)
+                                            if (roots.isNotEmpty()) {
+                                                val slots = containerArguments.getOrPut(target) { mutableMapOf() }
+                                                slots[local] = slots[local].orEmpty() + roots
+                                            }
                                             local += value.size
                                         }
                                     }
                                     usedFields.addAll(values.flatMap(::fields))
                                 }
-                                if (!idOnly && !transferable && !passThrough) deny(referenced, "NON_PLATFORM_OR_UNPROVEN_GETSTRING_READER:${call?.owner}#${call?.name}${call?.desc}")
+                                if (!idOnly && !transferable) deny(referenced, "NON_PLATFORM_OR_UNPROVEN_GETSTRING_READER:${call?.owner}#${call?.name}${call?.desc}")
                             }
                         }
                         return super.naryOperation(insn, values)
@@ -313,8 +480,8 @@ object RuntimeBytecodeAdapter {
                 }
                 Analyzer(interpreter).analyze(owner, method)
                 method.instructions.filterIsInstance<FieldInsnNode>().filter {
-                    it.owner.endsWith("/R\$string") && it.name in policy.strings
-                }.filterNot { it in usedFields }.forEach { deny(setOf(it.name), "UNADAPTED_RESOURCE_ID_REFERENCE") }
+                    it.owner.endsWith("/R\$string") && it.name in selected
+                }.filterNot { it in usedFields }.forEach { currentInstruction = it; deny(setOf(it.name), "UNADAPTED_RESOURCE_ID_REFERENCE") }
             }
         }
         readersScanned = true
@@ -322,16 +489,23 @@ object RuntimeBytecodeAdapter {
         // Third-party callers do not receive the adapter. Any dynamic lookup or selected ID reference blocks protection.
         hierarchy.filterKeys { it !in classes && !it.startsWith("android/") && !it.startsWith("java/") }.forEach { (owner, bytes) ->
             val node = ClassNode()
-            ClassReader(bytes).accept(node, ClassReader.SKIP_DEBUG or ClassReader.SKIP_FRAMES)
-            node.methods.forEach { method -> method.instructions.forEach { insn ->
-                if (insn is FieldInsnNode && insn.owner.endsWith("/R\$string") && insn.name in policy.strings) {
+            ClassReader(bytes).accept(node, ClassReader.SKIP_FRAMES)
+            node.methods.forEach { method ->
+                var line = -1
+                method.instructions.forEachIndexed { index, insn ->
+                if (insn is org.objectweb.asm.tree.LineNumberNode) line = insn.line
+                locations[insn] = mapOf("class" to owner, "method" to method.name, "descriptor" to method.desc,
+                    "instruction" to index) + (if (line < 0) emptyMap() else mapOf("line" to line)) +
+                    (node.sourceFile?.let { mapOf("sourceFile" to it) } ?: emptyMap())
+                currentInstruction = insn
+                if (insn is FieldInsnNode && insn.owner.endsWith("/R\$string") && insn.name in selected) {
                     deny(setOf(insn.name), "EXTERNAL_RESOURCE_READER:$owner")
                 }
                 if (insn is org.objectweb.asm.tree.LdcInsnNode && insn.cst is Int) {
                     deny(namesById[insn.cst].orEmpty(), "EXTERNAL_INLINED_RESOURCE_READER:$owner")
                 }
                 if (insn is MethodInsnNode && insn.name == "getIdentifier" && insn.desc == "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)I") {
-                    deny(policy.strings, "EXTERNAL_DYNAMIC_RESOURCE_LOOKUP:$owner")
+                    deny(selected, "EXTERNAL_DYNAMIC_RESOURCE_LOOKUP:$owner")
                 }
                 if (insn is MethodInsnNode && insn.owner == "android/content/res/AssetManager" && insn.name in setOf("open", "openFd", "list")) {
                     // Only constant external paths outside the selected paths/prefixes are closed in v1.
@@ -344,56 +518,71 @@ object RuntimeBytecodeAdapter {
                 }
             } }
         }
+        currentInstruction = null
+        if (symbolNode != null) deny(selected - symbolNode.fields.mapTo(hashSetOf()) { it.name }, "RESOURCE_NOT_IN_SYMBOLS")
         val proven = candidates.values.flatMapTo(linkedSetOf()) { it.first } - unsafe.keys
-        val missing = policy.strings - candidates.values.flatMap { it.first }.toSet()
+        val missing = selected - candidates.values.flatMap { it.first }.toSet()
+        currentInstruction = null
         deny(missing, "NO_TRACEABLE_PLATFORM_GETSTRING")
-        val stringCoverage = if (policy.strings.isEmpty()) 0.0 else proven.size.toDouble() / policy.strings.size
-        require(stringCoverage >= policy.minimumStringCoverage) { "closed getString coverage $stringCoverage is below ${policy.minimumStringCoverage}: $unsafe" }
         if (readerMethods != policy.assetReaders) assetReasons += "MISSING_OR_UNSUPPORTED_CONFIGURED_READER"
         val assetsClosed = policy.assetPaths.isNotEmpty() && assetReasons.isEmpty() && readers.isNotEmpty()
-        require(assetsClosed || policy.minimumAssetCoverage == 0.0) { "asset reader closure failed: $assetReasons" }
-        val rewrittenCalls = linkedMapOf<MethodInsnNode, List<Any>>()
-        if (proven.isNotEmpty()) generalStrings.forEach { (call, platform) ->
-            rewrittenCalls[call] = listOf(call.opcode, call.owner, call.name, call.desc, call.itf)
-            call.opcode = Opcodes.INVOKESTATIC
-            call.owner = helper
-            call.name = when (call.name) {
-                "getText" -> "text"
-                "getValue" -> "value"
-                "getValueForDensity" -> "valueForDensity"
-                else -> if (call.desc.startsWith("(I[")) "format" else "string"
+        val calls = mutableListOf<RuntimeReaderCall>()
+        if (proven.isNotEmpty()) {
+            generalStrings.forEach { (call, platform) ->
+                val kind = when (call.name) {
+                    "getText" -> "text"
+                    "getValue" -> "value"
+                    "getValueForDensity" -> "valueForDensity"
+                    else -> if (call.desc.startsWith("(I[")) "format" else "string"
+                }
+                val site = sites.getValue(call)
+                calls += RuntimeReaderCall(site.owner, site.method, site.descriptor, site.instruction, platform, kind)
             }
-            call.desc = "(L$platform;" + call.desc.substring(1)
-            call.itf = false
+            textSetters.forEach { (call, platform) ->
+                val site = sites.getValue(call)
+                calls += RuntimeReaderCall(site.owner, site.method, site.descriptor, site.instruction, platform, "setText")
+            }
         }
         if (assetsClosed) readers.forEach { call ->
-            rewrittenCalls[call] = listOf(call.opcode, call.owner, call.name, call.desc, call.itf)
-            call.opcode = Opcodes.INVOKESTATIC
-            call.owner = helper
-            call.desc = "(Landroid/content/res/AssetManager;" + call.desc.substring(1)
-            call.itf = false
+            val site = sites.getValue(call)
+            calls += RuntimeReaderCall(site.owner, site.method, site.descriptor, site.instruction, "android/content/res/AssetManager", call.name)
         }
-        val output = nodes.mapValues { (name, node) ->
-            if (node.methods.none { method -> method.instructions.any { it in rewrittenCalls } }) return@mapValues classes.getValue(name)
-            val writer = ClassWriter(0)
-            node.accept(writer)
-            val changed = writer.toByteArray()
-            // Inverse only the declared calls, independently of the data-flow selection.
-            node.methods.forEach { method -> method.instructions.filterIsInstance<MethodInsnNode>().forEach { call ->
-                rewrittenCalls[call]?.let { original ->
-                    call.opcode = original[0] as Int; call.owner = original[1] as String; call.name = original[2] as String
-                    call.desc = original[3] as String; call.itf = original[4] as Boolean
-                }
-            } }
+        val stringReport = RuntimeStringDiagnostics.report(policy, proven, null, issues, stringReaders, namespace)
+        val report = mapOf("schemaVersion" to 1, "stage" to "READERS", "status" to stringReport.getValue("status"), "stringSelected" to selected.size, "stringClosed" to proven.size,
+            "stringCoverage" to if (selected.isEmpty()) 0.0 else proven.size.toDouble() / selected.size,
+            "strings" to selected.sorted().map { mapOf("name" to it, "closed" to (it in proven), "reasons" to unsafe[it].orEmpty().sorted()) },
+            "stringAnalysis" to stringReport, "assetReaders" to readerMethods.sorted(), "assetsClosed" to assetsClosed,
+            "assetReasons" to assetReasons.sorted(), "adaptedCallCount" to calls.size,
+            "textViewMetadataDifference" to calls.any { it.kind == "setText" })
+        return RuntimeBytecodeAnalysis(proven, assetsClosed, report, stringReport, calls, policy)
+    }
+
+    fun apply(classes: Map<String, ByteArray>, analysis: RuntimeBytecodeAnalysis, helper: String): RuntimeAdaptation {
+        val callsByClass = analysis.calls.groupBy { it.owner }
+        val output = classes.mapValues { (owner, original) ->
+            val calls = callsByClass[owner] ?: return@mapValues original
+            val node = ClassNode().also { ClassReader(original).accept(it, 0) }
+            val rewritten = linkedMapOf<MethodInsnNode, List<Any>>()
+            calls.forEach { site ->
+                val method = node.methods.single { it.name == site.method && it.desc == site.descriptor }
+                val call = method.instructions[site.instruction] as MethodInsnNode
+                rewritten[call] = listOf(call.opcode, call.owner, call.name, call.desc, call.itf)
+                call.opcode = Opcodes.INVOKESTATIC
+                call.owner = helper
+                call.name = site.kind
+                call.desc = "(L${site.platform};" + call.desc.substring(1)
+                call.itf = false
+            }
+            val changed = ClassWriter(0).also(node::accept).toByteArray()
+            rewritten.forEach { (call, before) ->
+                call.opcode = before[0] as Int; call.owner = before[1] as String; call.name = before[2] as String
+                call.desc = before[3] as String; call.itf = before[4] as Boolean
+            }
             val restored = ClassWriter(0).also(node::accept).toByteArray()
-            val normalized = ClassWriter(0).also { ClassReader(classes.getValue(name)).accept(it, 0) }.toByteArray()
-            require(restored.contentEquals(normalized)) { "runtime reader inverse bytecode proof failed: $name" }
-            if (changed.contentEquals(restored)) classes.getValue(name) else changed
+            val normalized = ClassWriter(0).also { ClassReader(original).accept(it, 0) }.toByteArray()
+            require(restored.contentEquals(normalized)) { "runtime reader inverse bytecode proof failed: $owner" }
+            changed
         }
-        return RuntimeAdaptation(output, proven, assetsClosed, mapOf("schemaVersion" to 1,
-            "stringSelected" to policy.strings.size, "stringClosed" to proven.size, "stringCoverage" to stringCoverage,
-            "strings" to policy.strings.sorted().map { mapOf("name" to it, "closed" to (it in proven), "reasons" to unsafe[it].orEmpty().sorted()) },
-            "assetReaders" to readerMethods.sorted(), "assetsClosed" to assetsClosed, "assetReasons" to assetReasons.sorted(),
-            "adaptedCallCount" to rewrittenCalls.size, "inverseBytecodeProof" to true))
+        return RuntimeAdaptation(output, analysis.stringNames, analysis.assetsClosed, analysis.report + mapOf("inverseBytecodeProof" to true))
     }
 }

@@ -170,7 +170,7 @@ class HardenedBundlePlanner(
             request.ownership,
             com.holin.android.hardening.inventory.GitIgnoreMatcher(repository),
             externallyNamedResources,
-            request.valueResourcePolicy.enabled || request.runtimeClosure?.strings?.isNotEmpty() == true,
+            request.valueResourcePolicy.enabled || request.runtimeClosure?.policy?.selectedStrings?.isNotEmpty() == true,
         )
             .build(resourcesPb, entries)
         val valueDecision = request.valueResourcePolicy.select(resourceInventory, entries)
@@ -205,9 +205,14 @@ class HardenedBundlePlanner(
         val runtimeStrings = runtimeClosure?.let { closure ->
             val provenNames = resourceInventory.filter { it.type == com.holin.android.hardening.resources.ResourceType.STRING &&
                 it.origin == com.holin.android.hardening.resources.ResourceOrigin.OWNED }.mapTo(linkedSetOf()) { it.name }
-            com.holin.android.hardening.runtime.RuntimeStringResources.transform(resourcesPb,
-                com.holin.android.hardening.runtime.RuntimeStringScope(closure.strings.intersect(provenNames), runtimeKey,
-                    closure.policy.minimumStringCoverage, closure.policy.strings.size), contentSalt, entries)
+            val analysis = com.holin.android.hardening.runtime.RuntimeStringResources.analyze(resourcesPb, closure.policy,
+                closure.strings, provenNames, request.namespace, entries, closure.stringAnalysis)
+            com.holin.android.hardening.runtime.RuntimeStringDiagnostics.requireCoverage(closure.policy, analysis.names, analysis.report)
+            val transformed = com.holin.android.hardening.runtime.RuntimeStringResources.transform(resourcesPb,
+                com.holin.android.hardening.runtime.RuntimeStringScope(analysis.names, runtimeKey, 0.0,
+                    closure.policy.selectedStrings.size), contentSalt, entries)
+            com.holin.android.hardening.runtime.RuntimeStringPlan(transformed.table, transformed.ids,
+                com.holin.android.hardening.runtime.RuntimeStringDiagnostics.transformed(analysis.report, analysis.names))
         }
         val renamedTable = resourceTableTransformer.transform(runtimeStrings?.table ?: resourcesPb, allocation.report)
         val runtimeImages = com.holin.android.hardening.runtime.RuntimeImageResources.plan(entries, resourceInventory, renamedTable, runtimeClosure, runtimeKey, contentSalt)

@@ -122,6 +122,9 @@ abstract class RewriteHardeningBundleTask : DefaultTask() {
     abstract val controlledTransformationReport: RegularFileProperty
 
     @get:OutputFile
+    abstract val runtimeStringReport: RegularFileProperty
+
+    @get:OutputFile
     abstract val categoryReport: RegularFileProperty
 
     @get:OutputFile
@@ -157,6 +160,7 @@ abstract class RewriteHardeningBundleTask : DefaultTask() {
         bitmapMode.convention(com.holin.android.hardening.resources.BitmapMode.LEGACY_PERCEPTUAL)
         applicationId.convention(namespace)
         controlledTransformationReport.convention(project.layout.buildDirectory.file("reports/hardening/$name/controlled-transformations.json"))
+        runtimeStringReport.convention(project.layout.buildDirectory.file("reports/hardening/$name/runtime-strings-final.json"))
         categoryReport.convention(project.layout.buildDirectory.file("reports/hardening/$name/category-report.json"))
         outputs.upToDateWhen { false }
     }
@@ -223,6 +227,12 @@ abstract class RewriteHardeningBundleTask : DefaultTask() {
         }
         val lineageSeed = Files.readAllBytes(seedPath)
         val mappingText = Files.readString(mapping)
+        fun writeRuntimeStrings(diagnostic: Map<String, Any>) {
+            Files.writeString(paths.prepareOutput(runtimeStringReport.get().asFile.toPath()),
+                groovy.json.JsonOutput.prettyPrint(groovy.json.JsonOutput.toJson(diagnostic + mapOf(
+                    "variant" to preparedState.coordinates.variant, "inputFingerprint" to Sha256.hex((Sha256.file(input) + ":" +
+                        (runtimeClosure.orNull?.asFile?.toPath()?.let(Sha256::file) ?: "disabled")).toByteArray(Charsets.UTF_8))))))
+        }
         val plan = try {
             saltService.get().withSalt { salt ->
                 HardenedBundlePlanner().plan(
@@ -260,8 +270,20 @@ abstract class RewriteHardeningBundleTask : DefaultTask() {
                     ),
                 )
             }
+        } catch (failure: com.holin.android.hardening.runtime.RuntimeStringCoverageException) {
+            writeRuntimeStrings(failure.diagnostic)
+            throw org.gradle.api.GradleException("${failure.message}; report: ${runtimeStringReport.get().asFile}", failure)
         } finally {
             lineageSeed.fill(0)
+        }
+        @Suppress("UNCHECKED_CAST")
+        val stringDiagnostic = plan.controlledTransformations["runtimeStrings"] as? Map<String, Any> ?: mapOf("enabled" to false)
+        writeRuntimeStrings(stringDiagnostic)
+        val runtimePolicy = runtimeClosure.orNull?.asFile?.readText()?.let(com.holin.android.hardening.runtime.RuntimeClosure::read)?.policy
+        if (runtimePolicy != null) {
+            val entries = stringDiagnostic["entries"] as? List<*> ?: emptyList<Any>()
+            val skipped = entries.filterIsInstance<Map<*, *>>().filter { it["group"] == "candidate" && it["transformed"] != true }
+            if (skipped.isNotEmpty()) logger.warn("{} candidate runtime strings remain unprotected; report: {}", skipped.size, runtimeStringReport.get().asFile)
         }
         require(plan.report.sourceAabSha256 == Sha256.file(input)) {
             "bundle hardening plan does not identify the ordinary AAB"

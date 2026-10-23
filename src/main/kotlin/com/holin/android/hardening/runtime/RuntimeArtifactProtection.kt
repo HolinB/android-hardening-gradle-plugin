@@ -7,7 +7,7 @@ import com.holin.android.hardening.state.Sha256
 import com.holin.android.hardening.state.StrictJson
 import groovy.json.JsonSlurper
 
-data class RuntimeClosure(val policy: RuntimeProtectionPolicy, val strings: Set<String>, val assets: Map<String, String>, val helper: String, val images: Set<String> = emptySet()) {
+data class RuntimeClosure(val policy: RuntimeProtectionPolicy, val strings: Set<String>, val assets: Map<String, String>, val helper: String, val images: Set<String> = emptySet(), val stringAnalysis: Map<String, Any> = emptyMap()) {
     companion object {
         fun read(text: String): RuntimeClosure {
             StrictJson.validateDocument(text)
@@ -16,11 +16,13 @@ data class RuntimeClosure(val policy: RuntimeProtectionPolicy, val strings: Set<
             val policy = RuntimeProtectionPolicy.decode(p["policy"] as String)
             val strings = (p["strings"] as List<*>).map { it as String }.toSet()
             val assets = (p["assets"] as Map<*, *>).entries.associate { it.key as String to it.value as String }
-            require(policy.strings.containsAll(strings) && policy.assetPaths.containsAll(assets.keys))
+            require(policy.selectedStrings.containsAll(strings) && policy.assetPaths.containsAll(assets.keys))
             require(assets.values.all { Regex("[a-f0-9]{64}").matches(it) })
             val images = (p["images"] as? List<*>)?.map { it as String }?.toSet().orEmpty()
             require(images.all(policy.images::accepts))
-            return RuntimeClosure(policy, strings, assets, p["helper"] as String, images)
+            @Suppress("UNCHECKED_CAST")
+            val stringAnalysis = p["stringAnalysis"] as? Map<String, Any> ?: emptyMap()
+            return RuntimeClosure(policy, strings, assets, p["helper"] as String, images, stringAnalysis)
         }
     }
 }

@@ -1,10 +1,10 @@
-# Android Hardening Gradle Plugin 1.5.1（本地验证版）
+# Android Hardening Gradle Plugin 1.5.2（本地验证版）
 
-[English](README.en.md) | [更新日志](CHANGELOG.md) | [1.5.1 详细介绍](docs/PLUGIN_GUIDE_1_5_1_ZH.md) | [受控转换与适用性](docs/controlled-transformations.md)
+[English](README.en.md) | [更新日志](CHANGELOG.md) | [1.5.2 详细介绍](docs/PLUGIN_GUIDE_1_5_2_ZH.md) | [受控转换与适用性](docs/controlled-transformations.md)
 
-1.5.1 修复 macOS 无效 `DEVELOPER_DIR` 继承导致的 Git 子进程失败；1.5.0 增加资源文案／asset 读取闭合分析和默认关闭的 `runtimeProtection.images`。本次交付使用独立的本地 Maven 包，
-不覆盖 1.4.2。构建后校验 `build/distributions/hardening-gradle-plugin-1.5.1-portable-maven.zip.sha256`，
-解压并校验内部 `SHA256SUMS`，消费方以插件版本 `1.5.1` 和 `-PhardeningPluginRepo=<解压目录>/repository` 接入。
+1.5.2 增加字符串分级保护、独立预检、资源 ID 容器传播和默认关闭的 TextView 资源 setter 适配；保留 1.5.1 的 Git 环境修复及 1.5.0 的运行时内容保护。本次交付使用独立的本地 Maven 包，
+不覆盖 1.4.2。构建后校验 `build/distributions/hardening-gradle-plugin-1.5.2-portable-maven.zip.sha256`，
+解压并校验内部 `SHA256SUMS`，消费方以插件版本 `1.5.2` 和 `-PhardeningPluginRepo=<解压目录>/repository` 接入。
 下文的已发布 1.4.2 下载地址及启动器固定校验值继续对应已发布版本；本地验证版使用消费项目的 `./gradlew`。
 适用范围、排除原因和内容保护报告见 [运行时资源保护](docs/runtime-content-protection.md)。
 

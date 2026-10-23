@@ -1,6 +1,6 @@
 # Runtime content protection
 
-The 1.5.0 local build reuses the existing authenticated resource envelope, reader adapter, ownership audit, stable resource IDs, mappings, signing, and independent artifact verification. `runtimeProtection.images` defaults to disabled. The existing runtime policy encoding is unchanged when images are disabled.
+The 1.5.2 local build reuses the existing authenticated resource envelope, reader adapter, ownership audit, stable resource IDs, mappings, signing, and independent artifact verification. `runtimeProtection.images` defaults to disabled. Legacy runtime policy encoding remains unchanged when the new string groups and TextView adaptation are unused.
 
 ```kotlin
 androidHardening {
@@ -19,7 +19,58 @@ androidHardening {
 }
 ```
 
-Resource string analysis resolves final inline IDs using the current variant's R classes, inherited platform getters, and packaged forwarding calls. Known dynamic resource names/types narrow exclusions. Unsupported consumers, XML references, aliases, rich text, arrays and plurals remain subject to exclusion. A nonzero minimum fails a build whose selected scope is not closed. Audit the final transformed resource table as well as the reader report.
+## String groups and migration
+
+```kotlin
+androidHardening {
+    runtimeProtection {
+        strings.add("existing_contract")
+        minimumStringCoverage.set(1.0)
+        requiredStrings.add("internal_message")
+        candidateStrings.add("optional_status")
+        excludedStrings.put("public_title", "Read by layout XML")
+        adaptTextViewResourceSetters.set(false)
+    }
+}
+```
+
+All four groups must be disjoint. Conflicts list the resource names and fail validation; exclusion reasons must be nonblank. `strings` retains its original denominator and `minimumStringCoverage` gate. Every `requiredStrings` entry must pass both reader analysis and final encryption. `candidateStrings` failures preserve the original resource values, contribute to their own coverage denominator and produce an aggregate warning. `excludedStrings` are always reported. Removing an unsupported candidate from the encryption input does not turn its configured coverage into 100%.
+
+New collections default to empty and setter adaptation defaults to false. Existing policies keep schema 1 and the same configuration encoding/fingerprint. Using the new fields produces schema 2, including every new field in configuration identity and task inputs; the decoder accepts both versions. Changing groups is an explicit configuration/mapping-lineage change. No consuming application's list or source code is migrated automatically. Start by inspecting the reports, then deliberately move optional UI entries to candidates or document exclusions; do not lower the old coverage gate to conceal an unsupported required entry.
+
+## Independent preflight
+
+```shell
+./gradlew :app:checkHardeningDemoReleaseRuntimeStrings
+```
+
+The task is registered for variants selected by `androidHardening.variants`, including ordinary builds without `-PandroidHardening=true`. It compiles the current variant and reads original scoped classes, R symbols, available resource XML and the merged Manifest. It does not create a Bridge, encrypt resources, invoke R8, rewrite/sign an AAB or commit mapping state. Run it in a separate invocation from Hardening for the same variant, including the `assembleDemoReleaseHardening` and `bundleDemoReleaseHardening` wrappers. Explicit requests and indirect task-graph combinations are rejected. AGP's `toGet(CLASSES)` observes final artifacts; the preflight is deliberately not wired to a Hardening transformation chain.
+
+The task applies legacy and required reader gates; candidates only warn. A pass covers the available preliminary inputs. Ownership, missing/removed resources, compiled XML/aliases and *all* final resource configurations are checked again against the AAB. Full Hardening runs the shared reader analyzer automatically; running preflight first is optional.
+
+## Reader support and boundaries
+
+Analysis resolves inline IDs using current-variant R symbols, inherited platform `getString`/`getText`, and packaged forwarding methods. It tracks allocation identities, alias contents and fixed-point summaries through fields, arguments and return values. Supported paths include local `int[]`/`IntArray`, boxed integer arrays, Kotlin `listOf`/`mutableListOf`/`arrayListOf`, Java `Arrays.asList`/`ArrayList`, array loads/stores, list `add`/`set`/`get`, iteration, boxing/unboxing, array `clone`, `Arrays.copyOf` and `System.arraycopy`. Standard operations require modeled JVM signatures and provable origins; this is not support for arbitrary collection implementations. Unknown operations, reflection, Native calls or unproven external escapes still disqualify all affected IDs. A safe getter and an unsupported consumer of the same resource exclude that resource as a whole.
+
+XML, theme and resource-alias consumers remain unsupported; there is no XML decryption hook. XML parsing ignores comments and tools-only attributes and records actual reference locations. Rich text, resource arrays/plurals and unsupported values in any language/configuration remain unencrypted. Resource ID containers in code are distinct from Android string-array resources.
+
+Set `adaptTextViewResourceSetters` to true only after accepting the system metadata difference. The adapter recognizes the platform final `setText(int)` and `setText(int, BufferType)` through TextView, Button, EditText, AppCompat and packaged custom subclasses when their hierarchy proves resolution. Protected values use the corresponding CharSequence setter once, preserving the current resource configuration, BufferType and error propagation. Ordinary values fall back to the original resource-ID overload (with an extra resource lookup used for detection). There is no ciphertext-first double setter, hidden API, reflection into internal fields or global Resources replacement. Protected calls may change resource-origin, autofill sensitivity and content-capture text-ID metadata; this difference is recorded in the report. With the switch off, those resource setters remain unsupported consumers.
+
+Recognizing a setter does not establish that every reader of that resource is supported. The complete packaged dependency graph is analyzed too. For example, a dynamic `getIdentifier` path in AndroidX may carry a possible selected ID into an unmodeled consumer; the resource remains unprotected even when its AppCompat setter is recognized. Use the reported method locations to resolve the path, or explicitly place the resource in `candidateStrings` or `excludedStrings` according to the intended policy. The switch does not waive reader coverage.
+
+## Diagnostic reports
+
+Reports live under `build/reports/hardening/<variant>/`:
+
+| File | Stage and meaning |
+| --- | --- |
+| `runtime-strings-preflight.json` | Preliminary original-class analysis; final resource checks remain pending |
+| `runtime-readers.json` | Production reader analysis, written before reader coverage gates; `stringAnalysis` contains the complete string ledger |
+| `runtime-strings-final.json` | Final AAB resource qualification and actual encryption counts, written before string eligibility/coverage errors are raised |
+
+Each ledger contains all configured entries, including ownership failures, missing resources, explicit exclusions and reader failures. Entries are sorted by resource identity and include group, stage, status, reason codes, remediation and reader/reference locations. Code locations include class, method, JVM descriptor and source line when available, with instruction position otherwise. `NO_TRACEABLE_PLATFORM_GETSTRING` has no fabricated method location. Reports include variant and input fingerprint, group configured/reader-closed/eligible/transformed/excluded counts and original-denominator coverage. `PENDING_FINAL_RESOURCE_CHECK` and `ELIGIBLE_PENDING_TRANSFORM` are not evidence of encryption. Actual `TRANSFORMED` entries and `resourceTableInverseProof` are recorded only after the resource-table round trip succeeds; `finalArtifactVerified` remains false until the separate bundle semantic verification. Failure exceptions show counts, representative reasons and report paths. Reports do not contain resource plaintext or decryption keys.
+
+The existing inverse bytecode proof and independent resource-table recovery checks remain mandatory. Inspect both reader and final reports; build results do not establish acceptance of a consuming application's pages.
 
 Asset adapters support `open` access modes, directory `list`, and seekable descriptors for the selected owned assets. The Application bootstrap stores a context; a descriptor request lazily decrypts into a private temporary file, opens it, then unlinks it. Encryption uses the original bytes. A selected encrypted asset does not also undergo image format conversion. The build's content salt participates directly in the authenticated envelope's nonce derivation, so identical input and salt reproduce output while a new salt changes ciphertext.
 
