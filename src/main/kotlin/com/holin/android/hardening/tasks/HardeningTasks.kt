@@ -425,6 +425,15 @@ abstract class VerifyHardeningTask : DefaultTask() {
 
     @get:OutputFile abstract val mappingVerificationReport: RegularFileProperty
 
+    @get:InputFile
+    @get:Optional
+    @get:PathSensitive(PathSensitivity.NONE)
+    abstract val junkCodeInventory: RegularFileProperty
+
+    @get:OutputFile
+    @get:Optional
+    abstract val junkCodeVerificationReport: RegularFileProperty
+
     init {
         outputs.upToDateWhen { false }
     }
@@ -455,6 +464,15 @@ abstract class VerifyHardeningTask : DefaultTask() {
         val hardenedAabPath = paths.requireInput(hardenedBundle.get().asFile.toPath())
         val transformationPath = paths.requireInput(transformationReport.get().asFile.toPath())
         val bundleReportPath = paths.requireInput(bundleVerificationReport.get().asFile.toPath())
+        if (junkCodeInventory.isPresent) {
+            val inventory = com.holin.android.hardening.junk.JunkCodeInventory.read(paths.requireInput(junkCodeInventory.get().asFile.toPath()))
+            val bundleEvidence = com.holin.android.hardening.artifact.BundleVerificationReportCodec.decode(Files.readString(bundleReportPath))
+            require(inventory.variant == variantName.get() && inventory.contentSaltSha256 == bundleEvidence.contentSaltSha256) {
+                "junkCode inventory belongs to a different hardening invocation"
+            }
+            com.holin.android.hardening.junk.JunkCodeVerifier.verifyAab(hardenedAabPath, inventory,
+                paths.prepareOutput(junkCodeVerificationReport.get().asFile.toPath()))
+        }
         val reportPath = paths.prepareOutput(mappingVerificationReport.get().asFile.toPath())
         var namingManifest = CodeNamingManifestCodec().decode(Files.readString(namingManifestPath))
         var potentialBeanManifest = PotentialBeanFieldManifestCodec().decode(

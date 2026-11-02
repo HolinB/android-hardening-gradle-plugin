@@ -1,12 +1,21 @@
-# Android Hardening Gradle Plugin 1.5.2 (local validation build)
+# Android Hardening Gradle Plugin 1.5.4
 
-[Chinese](README.md) | [Changelog](CHANGELOG.md) | [1.5.2 detailed guide (Chinese)](docs/PLUGIN_GUIDE_1_5_2_ZH.md) | [Controlled transformations](docs/controlled-transformations.md)
+Selected hardening builds now generate isolated junk payload by default: 100 ordinary classes,
+eight disabled, non-exported Activities, ten generated methods per class, layouts and 40 each
+of drawables and strings. Configure or disable it with `androidHardening.junkCode`.
+Application construction calls every generated computation method once per application
+classloader, normally once per app process. Exact R8 keep rules remain in place;
+the defaults add one runtime dispatcher class. Startup cost grows with the configured counts.
+Ordinary builds remain outside this wiring. See [generation and artifact verification](docs/junk-code-generation.md).
 
-Version 1.5.2 adds tiered string protection, independent preflight checks, resource ID container propagation, and opt-in
-TextView resource setter adaptation. It retains the Git environment fix from 1.5.1 and runtime content protection from 1.5.0, and is delivered as a separate local Maven package without
+[Chinese](README.md) | [Changelog](CHANGELOG.md) | [1.5.4 upgrade guide (Chinese)](docs/PLUGIN_GUIDE_1_5_4_ZH.md) | [Controlled transformations](docs/controlled-transformations.md)
+
+Version 1.5.4 adds generated junk code and application startup calls. It includes the 1.5.3 runtime analyzer allocation optimizations, safe integer formatting, and
+automatic removal of invocation scratch files after all consumers finish. It preserves the string groups, preflight checks,
+container propagation, DSL, tasks, and report compatibility from 1.5.2, and is delivered as a separate local Maven package without
 replacing 1.4.2. Verify
-`build/distributions/hardening-gradle-plugin-1.5.2-portable-maven.zip.sha256`, extract it, verify `SHA256SUMS`, then use
-plugin version `1.5.2` with `-PhardeningPluginRepo=<extracted directory>/repository` and the consumer's `./gradlew`.
+`build/distributions/hardening-gradle-plugin-1.5.4-portable-maven.zip.sha256`, extract it, verify `SHA256SUMS`, then use
+plugin version `1.5.4` with `-PhardeningPluginRepo=<extracted directory>/repository` and the consumer's `./gradlew`.
 The published 1.4.2 download instructions and launcher checksum below still refer to the published release.
 See [runtime resource protection](docs/runtime-content-protection.md) for eligibility and reporting.
 

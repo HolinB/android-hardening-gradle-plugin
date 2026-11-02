@@ -4,7 +4,7 @@ This configuration-only example has an Android application module `:mobile`, two
 `:core` and `:media`, and the package root `com.example.demo`. It intentionally contains no application code,
 credentials, keystore, mapping, baseline, binary output, or production asset.
 
-1. Extract `hardening-gradle-plugin-1.4.2-portable-maven.zip` and verify its `SHA256SUMS` first.
+1. Extract `hardening-gradle-plugin-1.5.4-portable-maven.zip` and verify its `SHA256SUMS` first.
 2. Point `-PhardeningPluginRepo` at the extracted `repository` directory.
 3. Add your own production sources and owned images matched by the configured scopes. PNG demonstrates the new
    `images` DSL; WebP deliberately uses the legacy `webp` DSL to demonstrate 1.2.0 compatibility. Remove an include when

@@ -21,12 +21,21 @@ class AtomicFiles internal constructor(
     private val writeOperation: (Path, ByteArray) -> Unit = ::writeForced,
 ) {
     fun replace(target: Path, bytes: ByteArray) {
+        replace(target, bytes, true)
+    }
+
+    /** Atomic ownership metadata; an unreadable record is retained during recovery. */
+    internal fun replaceTransient(target: Path, bytes: ByteArray) {
+        replace(target, bytes, false)
+    }
+
+    private fun replace(target: Path, bytes: ByteArray, durable: Boolean) {
         Files.createDirectories(target.parent)
         val temporary = target.parent.resolve(".${target.fileName}.tmp-${UUID.randomUUID()}")
         try {
-            writeOperation(temporary, bytes)
-            atomicMove(temporary, target, replaceExisting = true)
-            forceDirectory(target.parent)
+            if (durable) writeOperation(temporary, bytes) else Files.write(temporary, bytes, CREATE_NEW, WRITE)
+            atomicMove(temporary, target, true)
+            if (durable) forceDirectory(target.parent)
         } finally {
             Files.deleteIfExists(temporary)
         }

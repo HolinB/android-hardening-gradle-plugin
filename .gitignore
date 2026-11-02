@@ -1,6 +1,7 @@
 /.gradle/
 /.gradle-home/
 /buildSrc/.gradle/
+/buildSrc/.kotlin/
 /buildSrc/build/
 /.kotlin/
 /.idea/

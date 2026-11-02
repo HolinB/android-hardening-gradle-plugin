@@ -11,6 +11,20 @@ import java.nio.file.Path
 internal class ArtifactPathBoundary(boundary: Path) {
     private val boundary = boundary.toAbsolutePath().normalize()
 
+    /** Validates an existing or missing descendant without creating it or following links. */
+    fun requireSafePath(path: Path): Path {
+        val absolute = requireDescendant(path)
+        requireSafeDirectory(boundary)
+        var current = boundary
+        val parts = boundary.relativize(absolute).toList()
+        parts.forEachIndexed { index, component ->
+            current = current.resolve(component)
+            require(!Files.isSymbolicLink(current)) { "symlink is not allowed in a hardening artifact path" }
+            if (Files.exists(current, NOFOLLOW_LINKS) && index < parts.lastIndex) requireSafeDirectory(current)
+        }
+        return absolute
+    }
+
     fun requireInput(path: Path): Path {
         val absolute = requireDescendant(path)
         requireSafeDirectories(requireNotNull(absolute.parent), createMissing = false)

@@ -19,7 +19,6 @@ import org.gradle.api.tasks.Input
 import org.gradle.api.tasks.InputFile
 import org.gradle.api.tasks.InputFiles
 import org.gradle.api.tasks.Internal
-import org.gradle.api.tasks.OutputDirectory
 import org.gradle.api.tasks.OutputFile
 import org.gradle.api.tasks.PathSensitive
 import org.gradle.api.tasks.PathSensitivity
@@ -52,7 +51,7 @@ abstract class ProtectHardeningRuntimeTask : DefaultTask() {
     @get:OutputFile abstract val closure: RegularFileProperty
     @get:OutputFile abstract val keepRules: RegularFileProperty
     @get:OutputFile abstract val report: RegularFileProperty
-    @get:OutputDirectory abstract val generatedDirectory: DirectoryProperty
+    @get:org.gradle.api.tasks.LocalState abstract val generatedDirectory: DirectoryProperty
 
     init { variantName.convention(name) }
 

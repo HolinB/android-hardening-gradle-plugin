@@ -1,6 +1,6 @@
 # Runtime content protection
 
-The 1.5.2 local build reuses the existing authenticated resource envelope, reader adapter, ownership audit, stable resource IDs, mappings, signing, and independent artifact verification. `runtimeProtection.images` defaults to disabled. Legacy runtime policy encoding remains unchanged when the new string groups and TextView adaptation are unused.
+The 1.5.4 build includes the 1.5.3 runtime implementation and reuses the existing authenticated resource envelope, reader adapter, ownership audit, stable resource IDs, mappings, signing, and independent artifact verification. It adds exact origin-set memory optimizations, proven integer formatting, and automatic invocation scratch cleanup. `runtimeProtection.images` defaults to disabled. Legacy runtime policy encoding remains unchanged when the string groups and TextView adaptation are unused. See the [1.5.4 upgrade guide](PLUGIN_GUIDE_1_5_4_ZH.md) for cleanup boundaries and local packaging.
 
 ```kotlin
 androidHardening {

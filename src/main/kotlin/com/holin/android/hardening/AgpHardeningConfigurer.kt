@@ -80,6 +80,7 @@ internal data class HardeningVariantTasks(
     val smoke: TaskProvider<SmokeHardeningTask>?,
     val run: TaskProvider<HardeningEntryTask>?,
     val pipeline: HardeningBundlePipelineTasks?,
+    val invocationSalt: Provider<com.holin.android.hardening.state.InvocationSaltService>,
 )
 
 internal data class HardeningBundlePipelineTasks(
@@ -172,6 +173,7 @@ internal object AgpHardeningConfigurer {
             )
             wireRuntimeStringPreflight(project, extension, androidComponents, variant, variantWiringEnabled)
             if (variantWiringEnabled) {
+                JunkCodeWiring.wire(project, extension, variant, tasks)
                 val effectiveR8Rules = wireFilteredAppRules(project, extension, variant, tasks)
                 wireRuntimeProtection(project, extension, androidComponents, variant, tasks)
                 val componentPlan = wireComponentTransforms(project, extension, variant, tasks)
@@ -321,7 +323,9 @@ internal object AgpHardeningConfigurer {
             closure.set(project.layout.buildDirectory.file("intermediates/hardening/${variant.name}/runtime/closure.json"))
             keepRules.set(project.layout.buildDirectory.file("intermediates/hardening/${variant.name}/runtime/keep.pro"))
             report.set(project.layout.buildDirectory.file("reports/hardening/${variant.name}/runtime-readers.json"))
-            generatedDirectory.set(project.layout.buildDirectory.dir("intermediates/hardening/${variant.name}/runtime/generated"))
+            generatedDirectory.set(tasks.prepare.flatMap { prepared -> prepared.preparedDirectory.map { directory ->
+                directory.dir("../invocations/${directory.asFile.name.removePrefix("prepared-")}/scratch/runtime-generated")
+            } })
         }
         variant.artifacts.forScope(ScopedArtifacts.Scope.ALL).use(runtime).toTransform(ScopedArtifact.CLASSES,
             ProtectHardeningRuntimeTask::inputJars, ProtectHardeningRuntimeTask::inputDirectories, ProtectHardeningRuntimeTask::outputJar)

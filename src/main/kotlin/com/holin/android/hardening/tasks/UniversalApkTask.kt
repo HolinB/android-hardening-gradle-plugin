@@ -150,6 +150,15 @@ abstract class AssembleHardeningUniversalApkTask : DefaultTask() {
     @get:OutputFile
     abstract val universalApkVerificationReport: RegularFileProperty
 
+    @get:InputFile
+    @get:org.gradle.api.tasks.Optional
+    @get:PathSensitive(PathSensitivity.NONE)
+    abstract val junkCodeInventory: RegularFileProperty
+
+    @get:OutputFile
+    @get:org.gradle.api.tasks.Optional
+    abstract val junkCodeVerificationReport: RegularFileProperty
+
     @get:Internal
     abstract val artifactBoundary: DirectoryProperty
 
@@ -193,20 +202,22 @@ abstract class AssembleHardeningUniversalApkTask : DefaultTask() {
             val manifest = BundleRewriteManifestCodec.read(rewriteManifestPath)
             val outputApk = paths.prepareOutput(universalApk.get().asFile.toPath())
             val outputReport = paths.prepareOutput(universalApkVerificationReport.get().asFile.toPath())
+            val junk = junkCodeInventory.orNull?.let {
+                com.holin.android.hardening.junk.JunkCodeInventory.read(paths.requireInput(it.asFile.toPath()))
+            }
+            require(junk == null || (junk.variant == variantName.get() && junk.contentSaltSha256 == saltService.get().sha256())) {
+                "junkCode inventory belongs to a different hardening invocation"
+            }
             UniversalApkAssembler(
                 ProcessIsolatedBundletoolBuilder(workerExecutor, bundletoolWorkerClasspath),
             ).assemble(
                 UniversalApkAssemblyRequest(
-                    variant = variantName.get(),
-                    contentSaltSha256 = saltService.get().sha256(),
-                    hardenedBundle = bundle,
-                    aapt2Executable = aapt2,
-                    zipalignExecutable = zipalign,
-                    bundleVerification = bundleReport,
-                    rewriteManifest = manifest,
-                    targetApk = outputApk,
-                    targetReport = outputReport,
-                    signingMaterial = signingMaterial,
+                    variantName.get(), saltService.get().sha256(), bundle, aapt2, zipalign,
+                    bundleReport, manifest, outputApk, outputReport, signingMaterial,
+                    if (junk == null) null else { candidate ->
+                        com.holin.android.hardening.junk.JunkCodeVerifier.verifyApk(candidate, junk, aapt2,
+                            paths.prepareOutput(junkCodeVerificationReport.get().asFile.toPath()))
+                    },
                 ),
             )
             paths.requireInput(outputApk)

@@ -9,6 +9,7 @@ import com.holin.android.hardening.audit.LegacyPluginDeclarationCodec
 import com.holin.android.hardening.audit.RuntimeArtifactInputCodec
 import com.holin.android.hardening.state.FixedSeedDerivation
 import com.holin.android.hardening.state.HardeningStateLockService
+import com.holin.android.hardening.state.HardeningCleanupService
 import com.holin.android.hardening.state.InvocationSaltService
 import com.holin.android.hardening.state.Sha256
 import com.holin.android.hardening.state.PortableStateMigrationDescriptorLoader
@@ -162,6 +163,43 @@ internal class HardeningPluginRegistration {
             parameters.fixedSeedSha256.set(
                 extension.effectiveFixedSeed.map(FixedSeedDerivation::seedSha256),
             )
+        }
+        val cleanupService = project.gradle.sharedServices.registerIfAbsent(
+            "androidHardeningCleanup${Sha256.hex(project.path.toByteArray())}$suffix",
+            HardeningCleanupService::class.java,
+        ) {
+            parameters.buildDirectory.set(project.layout.buildDirectory)
+            parameters.repositoryRoot.set(project.rootProject.layout.projectDirectory)
+            parameters.module.set(project.path)
+            parameters.variant.set(variant)
+            parameters.invocationId.set(saltService.map(InvocationSaltService::invocationIdSha256))
+        }
+        val requestedTasks = project.gradle.startParameter.taskNames.toList()
+        project.rootProject.allprojects {
+            tasks.configureEach {
+                // Consumers in another module may run after this module's last task.
+                usesService(cleanupService)
+            }
+        }
+        project.tasks.configureEach {
+            val task = this
+            if (task !is GradleBuild && task.name.contains("Hardening", true) && task.name.contains(suffix)) {
+                val explicit = requestedTasks.any { requested ->
+                    val selected = requested.trim(':').split(':')
+                    val actual = task.path.trim(':').split(':')
+                    maySelectTask(selected.last(), task.name) && (selected.size == 1 ||
+                        selected.size == actual.size && selected.dropLast(1).zip(actual.dropLast(1)).all { (selector, name) ->
+                            maySelectTask(selector, name)
+                        })
+                }
+                task.doFirst {
+                    val cleanup = cleanupService.get()
+                    cleanup.begin()
+                    if (explicit && task !is HardeningEntryTask) {
+                        cleanup.retainExplicitOutputs(task.outputs.files.files.map { it.toPath() })
+                    }
+                }
+            }
         }
         val lockService = project.gradle.sharedServices.registerIfAbsent(
             "androidHardeningStateLock${project.path.replace(':', '_')}$suffix",
@@ -456,7 +494,7 @@ internal class HardeningPluginRegistration {
         }
         val tasks = HardeningVariantTasks(
             prepare, audit, verify, archive, bundle, assemble, benchmark,
-            captureBaseline, compare, smoke, run, pipeline = null,
+            captureBaseline, compare, smoke, run, null, saltService,
         )
         val pipeline = context.bundle?.let {
             requireNotNull(pipelineWiring)(
@@ -472,6 +510,19 @@ internal class HardeningPluginRegistration {
             )
         }
         return tasks.copy(pipeline = pipeline)
+    }
+
+    // Gradle accepts prefixes and camel-case selectors. Conservatively retain
+    // outputs when a selector could name this task, including shortened project paths.
+    private fun maySelectTask(selector: String, name: String): Boolean {
+        if (selector.isEmpty() || name.isEmpty() || !selector.first().equals(name.first(), true)) return false
+        var position = 0
+        for (character in selector) {
+            val found = name.indexOf(character, position, true)
+            if (found < 0) return false
+            position = found + 1
+        }
+        return true
     }
 
     private fun registerIsolatedBuildEntry(

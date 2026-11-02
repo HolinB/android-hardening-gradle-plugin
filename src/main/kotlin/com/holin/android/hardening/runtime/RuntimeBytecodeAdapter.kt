@@ -74,17 +74,20 @@ object RuntimeBytecodeAdapter {
         val generalStrings = linkedMapOf<MethodInsnNode, String>()
         val textSetters = linkedMapOf<MethodInsnNode, String>()
         val sites = linkedMapOf<AbstractInsnNode, RuntimeReaderCall>()
-        val locations = linkedMapOf<AbstractInsnNode, Map<String, Any>>()
-        nodes.forEach { (owner, node) -> node.methods.forEach { method ->
-            var line = -1
-            method.instructions.forEachIndexed { index, instruction ->
-                if (instruction is org.objectweb.asm.tree.LineNumberNode) line = instruction.line
-                sites[instruction] = RuntimeReaderCall(owner, method.name, method.desc, index, "", "")
-                locations[instruction] = mapOf("class" to owner, "method" to method.name, "descriptor" to method.desc,
-                    "instruction" to index) + (if (line < 0) emptyMap() else mapOf("line" to line)) +
-                    (node.sourceFile?.let { mapOf("sourceFile" to it) } ?: emptyMap())
-            }
-        } }
+        val locations = java.util.IdentityHashMap<AbstractInsnNode, Map<String, Any>>()
+        var locationOwner = ""
+        var locationMethod: org.objectweb.asm.tree.MethodNode? = null
+        var locationSource: String? = null
+        fun location(instruction: AbstractInsnNode): Map<String, Any> = locations.getOrPut(instruction) {
+            val method = requireNotNull(locationMethod)
+            var previous: AbstractInsnNode? = instruction
+            while (previous != null && previous !is org.objectweb.asm.tree.LineNumberNode) previous = previous.previous
+            val line = (previous as? org.objectweb.asm.tree.LineNumberNode)?.line ?: -1
+            mapOf("class" to locationOwner, "method" to method.name, "descriptor" to method.desc,
+                "instruction" to method.instructions.indexOf(instruction)) +
+                (if (line < 0) emptyMap() else mapOf("line" to line)) +
+                (locationSource?.let { mapOf("sourceFile" to it) } ?: emptyMap())
+        }
         val issues = linkedMapOf<String, MutableSet<RuntimeStringIssue>>()
         val stringReaders = linkedMapOf<String, MutableSet<Map<String, Any>>>()
         var currentInstruction: AbstractInsnNode? = null
@@ -93,11 +96,12 @@ object RuntimeBytecodeAdapter {
         val dynamicFields = mutableMapOf<String, Set<String>>()
         val dynamicArguments = mutableMapOf<String, MutableMap<Int, Set<String>>>()
         val returnParameters = mutableMapOf<String, Set<Int>>()
+        val origins = RuntimeContainerOrigins()
         val containerElements = linkedMapOf<AbstractInsnNode, Set<String>>()
-        val containerAliases = linkedMapOf<AbstractInsnNode, Set<AbstractInsnNode>>()
-        val containerFields = linkedMapOf<String, Set<AbstractInsnNode>>()
-        val containerReturns = linkedMapOf<String, Set<AbstractInsnNode>>()
-        val containerArguments = linkedMapOf<String, MutableMap<Int, Set<AbstractInsnNode>>>()
+        val containerAliases = linkedMapOf<AbstractInsnNode, RuntimeContainerOrigins.Snapshot>()
+        val containerFields = linkedMapOf<String, RuntimeContainerOrigins.Snapshot>()
+        val containerReturns = linkedMapOf<String, RuntimeContainerOrigins.Snapshot>()
+        val containerArguments = linkedMapOf<String, MutableMap<Int, RuntimeContainerOrigins.Snapshot>>()
         val parameterMarkers = linkedMapOf<String, org.objectweb.asm.tree.LabelNode>()
         val relevantMethods = linkedSetOf<String>()
         val parameterDependencies = mutableMapOf<AbstractInsnNode, Set<Int>>()
@@ -129,22 +133,28 @@ object RuntimeBytecodeAdapter {
         if (selected.isNotEmpty()) nodes.forEach { (owner, node) -> node.methods.forEach { method ->
             if (method.instructions.any(::isContainerAllocation)) relevantMethods += "$owner#${method.name}${method.desc}"
         } }
-        fun containers(value: SourceValue): Set<AbstractInsnNode> = value.insns.flatMapTo(linkedSetOf()) { instruction ->
-            containerAliases[instruction].orEmpty() + when (instruction) {
-                is FieldInsnNode -> containerFields["${instruction.owner}#${instruction.name}:${instruction.desc}"].orEmpty()
-                is MethodInsnNode -> targets(instruction).flatMap { containerReturns[it].orEmpty() }
-                else -> emptySet()
-            } + if (instruction in containerElements || isContainerAllocation(instruction)) setOf(instruction) else emptySet()
+        fun containers(value: SourceValue): RuntimeContainerOrigins.Snapshot {
+            val sources = arrayListOf<RuntimeContainerOrigins.Snapshot?>()
+            value.insns.forEach { instruction ->
+                sources += containerAliases[instruction]
+                when (instruction) {
+                    is FieldInsnNode -> sources += containerFields["${instruction.owner}#${instruction.name}:${instruction.desc}"]
+                    is MethodInsnNode -> targets(instruction).forEach { sources += containerReturns[it] }
+                }
+                if (instruction in containerElements || isContainerAllocation(instruction)) sources += origins.single(instruction)
+            }
+            return origins.union(sources)
         }
-        fun summarySize() = dynamicReturns.values.sumOf { it.size } + dynamicFields.values.sumOf { it.size } +
-            dynamicArguments.values.sumOf { slots -> slots.values.sumOf { it.size } } + returnParameters.values.sumOf { it.size } +
-            containerElements.size + containerElements.values.sumOf { it.size } + containerFields.values.sumOf { it.size } +
-            containerReturns.values.sumOf { it.size } + containerArguments.values.sumOf { slots -> slots.values.sumOf { it.size } } + relevantMethods.size +
-            dynamicNames.values.sumOf { it.size } + containerAliases.values.sumOf { it.size }
+        fun summarySize() = dynamicReturns.values.sumOf { it.size.toLong() } + dynamicFields.values.sumOf { it.size.toLong() } +
+            dynamicArguments.values.sumOf { slots -> slots.values.sumOf { it.size.toLong() } } + returnParameters.values.sumOf { it.size.toLong() } +
+            containerElements.size.toLong() + containerElements.values.sumOf { it.size.toLong() } + containerFields.values.sumOf { it.size.toLong() } +
+            containerReturns.values.sumOf { it.size.toLong() } + containerArguments.values.sumOf { slots -> slots.values.sumOf { it.size.toLong() } } + relevantMethods.size.toLong() +
+            dynamicNames.values.sumOf { it.size.toLong() } + containerAliases.values.sumOf { it.size.toLong() }
         val readerMethods = linkedSetOf<String>()
         val assetReasons = linkedSetOf<String>()
         fun deny(names: Set<String>, reason: String) {
-            val location = currentInstruction?.let { locations[it] }.orEmpty()
+            if (names.isEmpty()) return
+            val location = currentInstruction?.let(::location).orEmpty()
             val issue = RuntimeStringIssue(reason.substringBefore(':'), location, reason.substringAfter(':', ""))
             names.forEach { name ->
                 unsafe.getOrPut(name) { linkedSetOf() }.add(reason)
@@ -162,26 +172,44 @@ object RuntimeBytecodeAdapter {
             fields(value).map { it.name } + value.insns.filterIsInstance<org.objectweb.asm.tree.LdcInsnNode>()
                 .flatMap { namesById[it.cst].orEmpty() }
         }.toSet()
-        fun dynamic(values: List<SourceValue>): Set<String> = values.flatMap { value -> containers(value).flatMap { containerElements[it].orEmpty() } + value.insns.flatMap { instruction ->
-            dynamicNames[instruction].orEmpty() + when (instruction) {
-                is MethodInsnNode -> if (instruction.name == "getIdentifier" && instruction.desc == "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)I" &&
-                    base(instruction.owner) == "android/content/res/Resources") emptySet()
-                    else targets(instruction).flatMap { dynamicReturns[it].orEmpty() }
-                is FieldInsnNode -> dynamicFields["${instruction.owner}#${instruction.name}:${instruction.desc}"].orEmpty()
-                else -> emptySet()
+        fun dynamic(values: List<SourceValue>): Set<String> {
+            val result = linkedSetOf<String>()
+            values.forEach { value ->
+                origins.forEachPopulated(containers(value)) { result.addAll(containerElements[it].orEmpty()) }
+                value.insns.forEach { instruction ->
+                    result.addAll(dynamicNames[instruction].orEmpty())
+                    when (instruction) {
+                        is MethodInsnNode -> if (!(instruction.name == "getIdentifier" && instruction.desc == "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)I" &&
+                            base(instruction.owner) == "android/content/res/Resources")) targets(instruction).forEach { result.addAll(dynamicReturns[it].orEmpty()) }
+                        is FieldInsnNode -> result.addAll(dynamicFields["${instruction.owner}#${instruction.name}:${instruction.desc}"].orEmpty())
+                    }
+                }
             }
-        } }.toSet()
+            return result
+        }
         fun names(values: List<SourceValue>): Set<String> = literalNames(values) + dynamic(values)
         fun markFields(values: List<SourceValue>) { usedFields.addAll(values.flatMap(::fields)) }
-        fun storeElements(roots: Set<AbstractInsnNode>, values: Set<String>) {
+        fun storeElements(roots: RuntimeContainerOrigins.Snapshot, values: Set<String>) {
             if (roots.isEmpty()) deny(values, "UNRESOLVED_RESOURCE_ID_CONTAINER")
-            roots.forEach { containerElements[it] = containerElements[it].orEmpty() + values }
+            roots.forEach {
+                val previous = containerElements[it]
+                containerElements[it] = when {
+                    previous == null -> values
+                    previous.containsAll(values) -> previous
+                    else -> previous + values
+                }
+                if (values.isNotEmpty() && previous.isNullOrEmpty()) origins.markPopulated(it)
+            }
         }
         fun modelContainer(call: MethodInsnNode, values: List<SourceValue>): Boolean {
             val signature = "${call.name}${call.desc}"
-            val receiver = values.firstOrNull()?.let(::containers).orEmpty()
-            fun fresh(contents: Set<String>) { storeElements(setOf(call), contents); containerAliases[call] = setOf(call) }
-            fun alias(roots: Set<AbstractInsnNode>) { containerAliases[call] = containerAliases[call].orEmpty() + roots }
+            val receiver = values.firstOrNull()?.let(::containers) ?: origins.empty
+            fun fresh(contents: Set<String>) {
+                val root = origins.single(call)
+                storeElements(root, contents)
+                containerAliases[call] = root
+            }
+            fun alias(roots: RuntimeContainerOrigins.Snapshot) { containerAliases[call] = origins.union(containerAliases[call], roots) }
             if ((call.owner == "java/lang/Integer" && signature in setOf("valueOf(I)Ljava/lang/Integer;", "intValue()I")) ||
                 (call.owner == "java/lang/Number" && signature == "intValue()I" && targets(call).isEmpty())) {
                 dynamicNames[call] = dynamicNames[call].orEmpty() + names(values)
@@ -240,7 +268,7 @@ object RuntimeBytecodeAdapter {
             }
             return false
         }
-        var previousSummarySize: Int
+        var previousSummarySize: Long
         var readersScanned = false
         do {
         previousSummarySize = summarySize()
@@ -255,6 +283,9 @@ object RuntimeBytecodeAdapter {
             node.methods.forEach methodLoop@{ method ->
                 val identity = "$owner#${method.name}${method.desc}"
                 currentInstruction = null
+                locationOwner = owner
+                locationMethod = method
+                locationSource = node.sourceFile
                 if (!readersScanned) method.instructions.filterIsInstance<MethodInsnNode>().forEach { call ->
                     val platform = base(call.owner)
                     if (call.opcode == Opcodes.INVOKEVIRTUAL && platform != null &&
@@ -285,6 +316,9 @@ object RuntimeBytecodeAdapter {
                             assetReasons += "UNADAPTED_ASSET_READER:$identity"
                         }
                     }
+                    if (call in generalStrings || call in textSetters || call in readers) {
+                        sites[call] = RuntimeReaderCall(owner, method.name, method.desc, method.instructions.indexOf(call), "", "")
+                    }
                 }
                 if (method.instructions.size() == 0 || selected.isEmpty()) return@methodLoop
                 val needsAnalysis = identity in relevantMethods || dynamicArguments[identity]?.isNotEmpty() == true || containerArguments[identity]?.isNotEmpty() == true || method.instructions.any { instruction ->
@@ -300,10 +334,11 @@ object RuntimeBytecodeAdapter {
                 }
                 if (!needsAnalysis) return@methodLoop
                 relevantMethods += identity
+                val pendingFormats = linkedMapOf<MethodInsnNode, MutableSet<String>>()
                 val interpreter = object : SourceInterpreter(Opcodes.ASM9) {
                     override fun newParameterValue(isInstanceMethod: Boolean, local: Int, type: org.objectweb.asm.Type): SourceValue {
                         val selected = dynamicArguments[identity]?.get(local).orEmpty()
-                        val roots = containerArguments[identity]?.get(local).orEmpty()
+                        val roots = containerArguments[identity]?.get(local) ?: origins.empty
                         if (selected.isEmpty() && roots.isEmpty()) return super.newParameterValue(isInstanceMethod, local, type)
                         val marker = parameterMarkers.getOrPut("$identity:$local") { org.objectweb.asm.tree.LabelNode() }
                         dynamicNames[marker] = selected
@@ -330,7 +365,7 @@ object RuntimeBytecodeAdapter {
                                     if (field !in programFields) deny(lookup, "EXTERNAL_RESOURCE_ID_FIELD")
                                     if (lookup.isNotEmpty()) dynamicFields[field] = dynamicFields[field].orEmpty() + lookup
                                     val roots = containers(value)
-                                    if (roots.isNotEmpty()) containerFields[field] = containerFields[field].orEmpty() + roots
+                                    if (roots.isNotEmpty()) containerFields[field] = origins.union(containerFields[field], roots)
                                     markFields(listOf(value))
                                 }
                                 else -> deny(lookup, "RESOURCE_ID_ESCAPES_CLOSED_GETSTRING")
@@ -351,7 +386,7 @@ object RuntimeBytecodeAdapter {
                                 if (field !in programFields) deny(lookup, "EXTERNAL_RESOURCE_ID_FIELD")
                                     if (lookup.isNotEmpty()) dynamicFields[field] = dynamicFields[field].orEmpty() + lookup
                                 val roots = containers(second)
-                                if (roots.isNotEmpty()) containerFields[field] = containerFields[field].orEmpty() + roots
+                                if (roots.isNotEmpty()) containerFields[field] = origins.union(containerFields[field], roots)
                                 markFields(listOf(second))
                             } else deny(lookup, "RESOURCE_ID_ESCAPES_CLOSED_GETSTRING")
                         }
@@ -370,7 +405,7 @@ object RuntimeBytecodeAdapter {
                         currentInstruction = insn
                         markFields(listOf(value))
                         val roots = containers(value)
-                        if (roots.isNotEmpty()) containerReturns[identity] = containerReturns[identity].orEmpty() + roots
+                        if (roots.isNotEmpty()) containerReturns[identity] = origins.union(containerReturns[identity], roots)
                         val parameters = value.insns.flatMapTo(linkedSetOf()) { parameterDependencies[it].orEmpty() }
                         if (parameters.isNotEmpty()) returnParameters[identity] = returnParameters[identity].orEmpty() + parameters
                         val independent = names(value.insns.filter { parameterDependencies[it].isNullOrEmpty() }.map { SourceValue(value.size, it) })
@@ -393,7 +428,7 @@ object RuntimeBytecodeAdapter {
                             }
                             if (returned.isNotEmpty()) {
                                 dynamicNames[call] = names(returned)
-                                containerAliases[call] = returned.flatMapTo(linkedSetOf(), ::containers)
+                                containerAliases[call] = origins.union(returned.map(::containers))
                                 parameterDependencies[call] = returned.flatMapTo(linkedSetOf()) { value -> value.insns.flatMap { parameterDependencies[it].orEmpty() } }
                             }
                         }
@@ -423,7 +458,7 @@ object RuntimeBytecodeAdapter {
                                 usedFields += idSources
                                 idNames.forEach { name ->
                                     candidates.getOrPut(call) { linkedSetOf<String>() to platform }.first.add(name)
-                                    stringReaders.getOrPut(name) { linkedSetOf() }.add(locations.getValue(call) +
+                                    stringReaders.getOrPut(name) { linkedSetOf() }.add(location(call) +
                                         mapOf("consumer" to "${call.owner}#${call.name}${call.desc}", "adapter" to if (call in textSetters) "TEXT_VIEW_RESOURCE_SETTER" else "PLATFORM_GETTER"))
                                 }
                             } else {
@@ -454,31 +489,41 @@ object RuntimeBytecodeAdapter {
                                     (call.owner == "android/app/Notification\$Builder" && call.name in setOf("addAction", "setSmallIcon")) ||
                                     (call.owner == "android/app/Notification\$Action\$Builder" && call.name == "<init>"))
                                 if (transferable && !idOnly) {
+                                    val arguments = values.map { value ->
+                                        Triple(value.size, names(listOf(value)), containers(value))
+                                    }
                                     destinations.forEach { target ->
                                         var local = 0
-                                        values.forEach { value ->
-                                            val selected = names(listOf(value))
+                                        arguments.forEach { (width, selected, roots) ->
                                             if (selected.isNotEmpty()) {
                                                 val slots = dynamicArguments.getOrPut(target) { mutableMapOf() }
                                                 slots[local] = slots[local].orEmpty() + selected
                                             }
-                                            val roots = containers(value)
                                             if (roots.isNotEmpty()) {
                                                 val slots = containerArguments.getOrPut(target) { mutableMapOf() }
-                                                slots[local] = slots[local].orEmpty() + roots
+                                                slots[local] = origins.union(slots[local], roots)
                                             }
-                                            local += value.size
+                                            local += width
                                         }
                                     }
                                     usedFields.addAll(values.flatMap(::fields))
                                 }
-                                if (!idOnly && !transferable) deny(referenced, "NON_PLATFORM_OR_UNPROVEN_GETSTRING_READER:${call?.owner}#${call?.name}${call?.desc}")
+                                if (!idOnly && !transferable) {
+                                    if (call != null && RuntimeNumericFormat.accepts(call)) pendingFormats.getOrPut(call) { linkedSetOf() }.addAll(referenced)
+                                    else deny(referenced, "NON_PLATFORM_OR_UNPROVEN_GETSTRING_READER:${call?.owner}#${call?.name}${call?.desc}")
+                                }
                             }
                         }
                         return super.naryOperation(insn, values)
                     }
                 }
-                Analyzer(interpreter).analyze(owner, method)
+                val frames = Analyzer(interpreter).analyze(owner, method)
+                pendingFormats.forEach { (call, referenced) ->
+                    if (!RuntimeNumericFormat.proves(call, method, frames, referenced, ::names)) {
+                        currentInstruction = call
+                        deny(referenced, "NON_PLATFORM_OR_UNPROVEN_GETSTRING_READER:${call.owner}#${call.name}${call.desc}")
+                    }
+                }
                 method.instructions.filterIsInstance<FieldInsnNode>().filter {
                     it.owner.endsWith("/R\$string") && it.name in selected
                 }.filterNot { it in usedFields }.forEach { currentInstruction = it; deny(setOf(it.name), "UNADAPTED_RESOURCE_ID_REFERENCE") }
@@ -491,12 +536,10 @@ object RuntimeBytecodeAdapter {
             val node = ClassNode()
             ClassReader(bytes).accept(node, ClassReader.SKIP_FRAMES)
             node.methods.forEach { method ->
-                var line = -1
-                method.instructions.forEachIndexed { index, insn ->
-                if (insn is org.objectweb.asm.tree.LineNumberNode) line = insn.line
-                locations[insn] = mapOf("class" to owner, "method" to method.name, "descriptor" to method.desc,
-                    "instruction" to index) + (if (line < 0) emptyMap() else mapOf("line" to line)) +
-                    (node.sourceFile?.let { mapOf("sourceFile" to it) } ?: emptyMap())
+                locationOwner = owner
+                locationMethod = method
+                locationSource = node.sourceFile
+                method.instructions.forEach { insn ->
                 currentInstruction = insn
                 if (insn is FieldInsnNode && insn.owner.endsWith("/R\$string") && insn.name in selected) {
                     deny(setOf(insn.name), "EXTERNAL_RESOURCE_READER:$owner")

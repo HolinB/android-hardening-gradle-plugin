@@ -273,6 +273,19 @@ internal object AgpPublicCapabilityProbe {
         verify(actualAgpVersion, ReflectiveAgpPublicApi(classLoader))
     }
 
+    /** Optional feature APIs must not become prerequisites for ordinary builds. */
+    fun verifyJunkCode(actualAgpVersion: String, classLoader: ClassLoader) {
+        val api = ReflectiveAgpPublicApi(classLoader)
+        listOf(
+            AgpPublicCapability("ScopedArtifactsOperation.toAppend", "com.android.build.api.variant.ScopedArtifactsOperation", "toAppend"),
+            AgpPublicCapability("SourceDirectories.addGeneratedSourceDirectory", "com.android.build.api.variant.SourceDirectories", "addGeneratedSourceDirectory"),
+        ).forEach { capability ->
+            require(api.isAvailable(capability)) {
+                "Android Gradle Plugin junkCode capability is unavailable: actual=$actualAgpVersion, missing=${capability.name}"
+            }
+        }
+    }
+
     fun verify(actualAgpVersion: String, api: AgpPublicApi) {
         requiredCapabilities.firstOrNull { capability -> !api.isAvailable(capability) }?.let { missing ->
             throw IllegalArgumentException(

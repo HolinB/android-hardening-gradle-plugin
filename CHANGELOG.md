@@ -1,3 +1,18 @@
+# Android Hardening Gradle Plugin 1.5.4
+
+- Connect every generated computation method to Application construction through a guarded, bounded call tree. Preserve custom constructor bytecode with an inverse proof, retain exact R8 rules, and verify the Application-to-payload calls in delivered DEX. Generator version 2 records dispatcher metadata and call-injection evidence separately from payload counts.
+- Generate isolated ASM classes, disabled Activities and Android resources by default for selected hardening builds through `junkCode`. Use lineage-based names, invocation-based content, exact keep rules and independent final AAB/APK verification. Ordinary builds remain unchanged; no JavaPoet or generated Java compilation is required. See [junk code generation](docs/junk-code-generation.md).
+- Include the existing 1.5.3 runtime analysis and invocation cleanup implementation. Align Maven coordinates, portable package names, CI checks and consumer version references with 1.5.4.
+
+# Android Hardening Gradle Plugin 1.5.3 (local)
+
+- Preserve exact runtime analysis with adaptive sparse/dense origin snapshots, unchanged-merge reuse, shared argument summaries, lazy diagnostics, and Long member counts.
+- Prove constant integer `String.format` calls using local argument arrays and per-slot resource-ID origins. Unknown formats, writes, escapes, and unsafe target-ID object callbacks remain rejected.
+- Automatically clean invocation-owned prepared state, candidate bundle copies, and runtime scratch after all consumers finish. Keep final artifacts, necessary reports, durable state, explicit intermediate deliverables, and effective incremental caches.
+- Recover interrupted invocation scratch only after validating ownership and obtaining an exclusive lease; retain uncertain legacy directories and report deletion failures for retry.
+- Isolate cleanup services by complete module-path hashes, preserve atomic durable state writes, and avoid redundant transient metadata writes.
+- Align local publication, current documentation, CI archive names, and existing test version literals with 1.5.3. This version includes the locally verified memory10 implementation; prior full-AAB evidence remains bound to that candidate.
+
 # Android Hardening Gradle Plugin 1.5.2 (local)
 
 - Add required, candidate, and explicitly excluded string groups while preserving legacy string coverage thresholds and configuration identity.

@@ -45,7 +45,7 @@ class DocumentationExampleContractTest {
         assertTrue(settings.contains("hardeningPluginRepo"), "example must accept the extracted Maven repository")
         assertTrue(settings.contains("include(\":mobile\", \":core\", \":media\")"), "example modules are incomplete")
         assertFalse(allBuildLogic.contains("includeBuild"), "example must not substitute plugin source")
-        assertTrue(rootBuild.contains("id(\"com.holin.android.hardening\") version \"1.4.2\" apply false"))
+        assertTrue(rootBuild.contains("id(\"com.holin.android.hardening\") version \"1.5.4\" apply false"))
         assertTrue(mobileBuild.contains("id(\"com.holin.android.hardening\")"))
         REQUIRED_EXAMPLE_SNIPPETS.forEach { snippet ->
             assertTrue(mobileBuild.contains(snippet), "mobile example is missing: $snippet")

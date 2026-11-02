@@ -33,6 +33,7 @@ open class AndroidHardeningExtension @Inject constructor(
     val reproducibility: ReproducibilitySpec = objects.newInstance(ReproducibilitySpec::class.java, objects)
     val naming: NamingSpec = objects.newInstance(NamingSpec::class.java, objects)
     val code: CodeSpec = objects.newInstance(CodeSpec::class.java, objects)
+    val junkCode: JunkCodeSpec = objects.newInstance(JunkCodeSpec::class.java, objects)
     val resources: ResourcesSpec = objects.newInstance(ResourcesSpec::class.java, objects)
     val dependencies: DependenciesSpec = objects.newInstance(DependenciesSpec::class.java, objects)
     val nativeLibraries: NativeLibrariesSpec = objects.newInstance(NativeLibrariesSpec::class.java, objects)
@@ -80,6 +81,7 @@ open class AndroidHardeningExtension @Inject constructor(
     @Deprecated("The v1 naming policy is fixed by the plugin.")
     fun naming(action: Action<in NamingSpec>) = action.execute(naming)
     fun code(action: Action<in CodeSpec>) = action.execute(code)
+    fun junkCode(action: Action<in JunkCodeSpec>) = action.execute(junkCode)
     fun resources(action: Action<in ResourcesSpec>) = action.execute(resources)
     @Deprecated("Use dependencyProtection { ... } instead.")
     fun dependencies(action: Action<in DependenciesSpec>) = action.execute(dependencies)
@@ -128,6 +130,7 @@ open class AndroidHardeningExtension @Inject constructor(
     val REPORT_ONLY: BenchmarkMode get() = BenchmarkMode.REPORT_ONLY
 
     fun validateV1(): ValidatedHardeningConfiguration {
+        junkCode.policy()
         dependencies.policy()
         nativeLibraries.policy()
         runtimeProtection.policy()

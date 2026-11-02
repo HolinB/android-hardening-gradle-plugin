@@ -79,6 +79,10 @@ internal object OwnedSimilarityConfigurationIdentity {
         field("code.preserveLineNumbers", HardeningV1Policy.codePreserveLineNumbers)
         field("code.sourceFileMode", HardeningV1Policy.codeSourceFileMode.name)
         field("code.stringFog", HardeningV1Policy.codeStringFog.name)
+        if (extension.junkCode.enabled.get()) {
+            field("junkCode.generatorVersion", com.holin.android.hardening.junk.JunkCodePolicy.GENERATOR_VERSION)
+            field("junkCode", extension.junkCode.policy().encode())
+        }
         field("code.diversification.mode", HardeningV1Policy.codeDiversificationMode.name)
         field("code.diversification.contentSalt", HardeningV1Policy.codeContentSalt.name)
         field("code.diversification.minimumCoverage", extension.code.diversification.minimumCoverage.get())

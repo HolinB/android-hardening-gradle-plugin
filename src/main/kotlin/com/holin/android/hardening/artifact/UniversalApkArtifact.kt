@@ -129,6 +129,7 @@ internal data class UniversalApkAssemblyRequest(
     val targetApk: Path,
     val targetReport: Path,
     val signingMaterial: SigningMaterial,
+    val candidateVerification: ((Path) -> Unit)? = null,
 )
 
 internal data class OrdinaryUniversalApkAssemblyRequest(
@@ -328,6 +329,7 @@ internal class UniversalApkAssembler(
                 finalApkSignerHash == aabSignerHash
             ) { "final universal APK signer certificate does not match verified provenance" }
             val payloadVerification = payloadVerifier.verify(bundletoolApk, candidateApk, binaryXmlTargets)
+            request.candidateVerification?.invoke(candidateApk)
             require(payloadVerification.changedTargetPaths == binaryXmlTargets.toSet()) {
                 "verified APK changed-target accounting differs from the manifest-selected set"
             }
